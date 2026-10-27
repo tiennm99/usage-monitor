@@ -45,8 +45,10 @@ self-updater are all written from scratch against the same public APIs
   expires and after an update was applied
 - Auto-hide when a fullscreen app is in the foreground (games, video,
   presentations) — reappears when you leave fullscreen
-- Every minute, shown bubbles are put back on top, so another
-  always-on-top window can't keep them covered or hidden
+- Bubbles stay above other always-on-top windows, such as chat
+  notifications: on Windows a covered bubble is raised again within about
+  1.5 s, and on every platform shown bubbles are put back on top every
+  minute, so nothing can keep them covered or hidden
 
 ## Who this is for
 

@@ -512,6 +512,12 @@ impl Runtime {
         bubble::bring_back(&self.ui.app);
     }
 
+    /// Raise shown bubbles that another app's always-on-top window covers.
+    #[cfg(windows)]
+    pub fn keep_bubbles_on_top(&self) {
+        bubble::keep_on_top(&self.ui.app);
+    }
+
     /// Apply a visibility event to every bubble. A user show or hide is
     /// also saved as `widget_visible`.
     pub fn apply_visibility(&self, event: visibility::Event) {

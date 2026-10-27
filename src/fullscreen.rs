@@ -4,7 +4,9 @@
 //! unless the user hid them in the meantime.
 //!
 //! The same thread brings the bubbles back every minute while they should
-//! show, in case another window covered or hid them.
+//! show, in case another window covered or hid them. On Windows it also
+//! re-raises, on every check, a bubble that another app's always-on-top
+//! window (a chat toast, say) has just covered.
 
 use std::io;
 use std::sync::Arc;
@@ -28,6 +30,8 @@ pub fn spawn(runtime: Arc<Runtime>) -> io::Result<()> {
             let mut last_bring_back = Instant::now();
             while !runtime.is_exiting() {
                 tick(&runtime);
+                #[cfg(windows)]
+                runtime.keep_bubbles_on_top();
                 if last_bring_back.elapsed() >= BRING_BACK_INTERVAL {
                     last_bring_back = Instant::now();
                     runtime.bring_back_bubbles();

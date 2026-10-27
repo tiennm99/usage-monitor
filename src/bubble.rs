@@ -514,6 +514,30 @@ pub fn bring_back(app: &AppHandle) {
     }
 }
 
+/// Put back on top every shown bubble that another app's always-on-top
+/// window, such as a chat toast, now covers. Cheap enough to run on every
+/// fullscreen check; bubbles hidden for a fullscreen app are left alone.
+#[cfg(windows)]
+pub fn keep_on_top(app: &AppHandle) {
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        let shows = runtime_of(&handle).is_some_and(|r| r.with_state(|s| s.visibility.shows()));
+        if !shows {
+            return;
+        }
+        for (_, window) in windows(&handle) {
+            match platform::windows::covered_by_other_topmost(&window) {
+                Ok(true) => raise(&window),
+                Ok(false) => {}
+                Err(err) => log::warn!("{} on-top check failed: {err}", window.label()),
+            }
+        }
+    });
+    if let Err(err) = queued {
+        log::warn!("bubble on-top check could not reach the main thread: {err}");
+    }
+}
+
 fn raise(window: &WebviewWindow) {
     #[cfg(windows)]
     let result = platform::windows::raise_topmost(window).map_err(|e| e.to_string());

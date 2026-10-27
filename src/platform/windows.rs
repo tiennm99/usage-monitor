@@ -26,12 +26,13 @@ use windows::Win32::UI::Shell::{
     ABE_TOP, ABM_GETTASKBARPOS, APPBARDATA,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
-    IsIconic, IsWindowVisible, MessageBoxW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, MA_NOACTIVATE, MB_ICONERROR, MB_OK,
-    MB_SETFOREGROUND, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
-    SW_HIDE, SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
-    WM_SETTINGCHANGE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+    GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
+    GetWindowThreadProcessId, IsIconic, IsWindowVisible, MessageBoxW, SetForegroundWindow,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOPMOST,
+    MA_NOACTIVATE, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE,
+    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETTINGCHANGE, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
 };
 
 use crate::core::geom::{self, Edge, Rect};
@@ -311,6 +312,49 @@ pub fn raise_topmost(window: &tauri::WebviewWindow) -> io::Result<()> {
         )
     }
     .map_err(io::Error::from)
+}
+
+/// Whether a visible always-on-top window of another process sits above
+/// `window` in the z-order and overlaps it, such as a chat app's toast.
+/// Our own windows (the panel, a context menu) never count, so raising a
+/// bubble over them is never asked for.
+pub fn covered_by_other_topmost(window: &tauri::WebviewWindow) -> io::Result<bool> {
+    let hwnd = hwnd_of(window)?;
+    let Some((ours, _)) = visible_window_bounds(hwnd) else {
+        return Ok(false);
+    };
+    let own_pid = std::process::id();
+    // SAFETY: `hwnd` is a live window of this process; each step only reads
+    // the z-order, and a window closing mid-walk ends it with an error.
+    let mut above = unsafe { GetWindow(hwnd, GW_HWNDPREV) };
+    // Topmost windows sit at the head of the z-order, so the walk is short;
+    // the cap guards against a z-order that keeps changing under it.
+    for _ in 0..MAX_Z_ORDER_WALK {
+        let Ok(other) = above else {
+            return Ok(false);
+        };
+        if covers(other, &ours, own_pid) {
+            return Ok(true);
+        }
+        // SAFETY: as above.
+        above = unsafe { GetWindow(other, GW_HWNDPREV) };
+    }
+    Ok(false)
+}
+
+const MAX_Z_ORDER_WALK: usize = 1024;
+
+fn covers(other: HWND, ours: &Rect, own_pid: u32) -> bool {
+    // SAFETY: read-only queries; a stale handle yields 0 / false.
+    let ex_style = unsafe { GetWindowLongPtrW(other, GWL_EXSTYLE) } as u32;
+    if ex_style & WS_EX_TOPMOST.0 == 0
+        || unsafe { !IsWindowVisible(other).as_bool() }
+        || is_dwm_cloaked(other)
+        || window_process_id(other).is_none_or(|pid| pid == own_pid)
+    {
+        return false;
+    }
+    visible_window_bounds(other).is_some_and(|(theirs, _)| theirs.intersects(ours))
 }
 
 /// Hide a bubble (see [`show_no_activate`]).
