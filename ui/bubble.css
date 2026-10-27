@@ -1,9 +1,9 @@
 /* Bubble palette. Accent and fill colours come from the payload. */
 :root[data-theme='dark'] {
-  /* 60% opaque, so the desktop shows through. Tracks and the edge are
+  /* 80% opaque, so the desktop shows through. Tracks and the edge are
      tints over it, so they keep the same contrast step on a light or dark
      desktop; the text halo keeps text readable on either. */
-  --bg: rgb(31 31 31 / 60%);
+  --bg: rgb(31 31 31 / 80%);
   --track: rgb(0 0 0 / 28%);
   --time-track: rgb(255 255 255 / 14%);
   --time-fill: #b0b0b0;
@@ -14,7 +14,7 @@
 }
 
 :root[data-theme='light'] {
-  --bg: rgb(243 243 243 / 60%);
+  --bg: rgb(243 243 243 / 80%);
   --track: rgb(0 0 0 / 10%);
   --time-track: rgb(0 0 0 / 8%);
   --time-fill: #666666;
