@@ -37,7 +37,6 @@ pub struct TrayView {
 pub fn views(enabled: &[ProviderId], usage: &UsageState, strings: &LocaleStrings) -> Vec<TrayView> {
     enabled
         .iter()
-        .filter(|p| p.metadata().live_usage)
         .map(|&provider| {
             let entry = usage.snapshots.get(&provider);
             TrayView {
@@ -106,7 +105,7 @@ struct Plan {
 
 fn plan(shown: &HashMap<ProviderId, Shown>, views: &[TrayView]) -> Plan {
     let mut plan = Plan {
-        remove: ProviderId::LIVE_USAGE
+        remove: ProviderId::ALL
             .into_iter()
             .filter(|p| shown.contains_key(p) && !views.iter().any(|v| v.provider == *p))
             .collect(),
@@ -153,7 +152,7 @@ impl Trays {
     /// The providers that currently have an icon.
     pub fn providers(&self) -> Vec<ProviderId> {
         let shown = self.shown();
-        ProviderId::LIVE_USAGE
+        ProviderId::ALL
             .into_iter()
             .filter(|p| shown.contains_key(p))
             .collect()
@@ -319,13 +318,8 @@ mod tests {
     #[test]
     fn views_follow_enabled_providers_and_last_poll() {
         let s = strings();
-        let all = [
-            ProviderId::Claude,
-            ProviderId::ChatGpt,
-            ProviderId::OpenCodeGo,
-        ];
-        let v = views(&all, &usage(42.0, true), &s);
-        assert_eq!(v.len(), 2, "OpenCode Go never gets an icon");
+        let v = views(&ProviderId::ALL, &usage(42.0, true), &s);
+        assert_eq!(v.len(), 2);
         assert_eq!(v[0].provider, ProviderId::Claude);
         assert_eq!(v[0].percent, Some(42.0));
         assert_eq!(
@@ -335,7 +329,7 @@ mod tests {
         assert_eq!(v[1].provider, ProviderId::ChatGpt);
         assert_eq!(v[1].percent, None);
         // A failed last poll greys every badge to the track.
-        let v = views(&all, &usage(42.0, false), &s);
+        let v = views(&ProviderId::ALL, &usage(42.0, false), &s);
         assert_eq!(v[0].percent, None);
         assert!(views(&[ProviderId::ChatGpt], &usage(1.0, true), &s)
             .iter()

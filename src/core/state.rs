@@ -79,10 +79,6 @@ impl Alert {
                     strings.chatgpt_token_expired_title.clone(),
                     strings.chatgpt_token_expired_body.clone(),
                 ),
-                ProviderId::OpenCodeGo => (
-                    strings.opencode_go_label.clone(),
-                    strings.update_failed.clone(),
-                ),
             },
             Alert::UpdateApplied { version } => (
                 strings.update_applied_title.clone(),

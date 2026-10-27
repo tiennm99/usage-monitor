@@ -24,7 +24,6 @@ pub struct LocaleStrings {
     pub providers: String,
     pub claude_label: String,
     pub chatgpt_label: String,
-    pub opencode_go_label: String,
     pub settings: String,
     pub start_with_windows: String,
     pub start_at_login: String,
@@ -124,7 +123,6 @@ impl LocaleStrings {
         match provider {
             ProviderId::Claude => &self.claude_label,
             ProviderId::ChatGpt => &self.chatgpt_label,
-            ProviderId::OpenCodeGo => &self.opencode_go_label,
         }
     }
 }
@@ -141,7 +139,6 @@ fn english_strings() -> LocaleStrings {
         providers: "Providers".into(),
         claude_label: "Claude Code".into(),
         chatgpt_label: "Codex".into(),
-        opencode_go_label: "OpenCode Go".into(),
         settings: "Settings".into(),
         start_with_windows: "Start with Windows".into(),
         start_at_login: "Start at login".into(),

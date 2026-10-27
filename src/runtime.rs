@@ -139,7 +139,7 @@ struct BubbleSnapshot {
 impl BubbleSnapshot {
     fn of(state: &AppState) -> Self {
         Self {
-            providers: enabled_live_providers(&state.settings),
+            providers: enabled_providers(&state.settings),
             usage: state.usage.clone(),
             strings: state.strings.clone(),
             is_dark: state.is_dark,
@@ -264,7 +264,7 @@ impl Runtime {
             };
             let (views, menu_snapshot) = runtime.with_state(|s| {
                 (
-                    tray::views(&enabled_live_providers(&s.settings), &s.usage, &s.strings),
+                    tray::views(&enabled_providers(&s.settings), &s.usage, &s.strings),
                     MenuSnapshot::of(s),
                 )
             });
@@ -468,13 +468,10 @@ impl Runtime {
         });
     }
 
-    /// Toggle a live provider, keeping at least one enabled, then create or
+    /// Toggle a provider, keeping at least one enabled, then create or
     /// destroy its bubble, update the tray and poll.
     fn toggle_provider(self: &Arc<Self>, provider: ProviderId) {
-        if !provider.metadata().live_usage {
-            return;
-        }
-        let enabled = self.update_settings(|s| s.toggle_live_provider(provider));
+        let enabled = self.update_settings(|s| s.toggle_provider(provider));
         if enabled {
             bubble::spawn_create(&self.ui.app, provider);
         } else if let Some(window) = self.ui.app.get_webview_window(&bubble_label(provider)) {
@@ -835,9 +832,9 @@ pub fn bubble_label(provider: ProviderId) -> String {
     format!("{BUBBLE_LABEL_PREFIX}{}", provider.slug())
 }
 
-/// Live providers the user has enabled, in display order.
-pub fn enabled_live_providers(settings: &Settings) -> Vec<ProviderId> {
-    ProviderId::LIVE_USAGE
+/// Providers the user has enabled, in display order.
+pub fn enabled_providers(settings: &Settings) -> Vec<ProviderId> {
+    ProviderId::ALL
         .into_iter()
         .filter(|p| settings.is_provider_enabled(*p))
         .collect()
@@ -1008,7 +1005,7 @@ fn setup(app: &mut tauri::App, cli: &CliArgs) -> Result<(), Box<dyn Error>> {
         update_interval_secs: state.settings.update_check_interval_secs,
         last_update_check_unix: state.settings.last_update_check_unix,
     };
-    let providers = enabled_live_providers(&state.settings);
+    let providers = enabled_providers(&state.settings);
 
     let (tx, rx) = mpsc::channel();
     let runtime = Arc::new(Runtime {
@@ -1150,18 +1147,17 @@ mod tests {
     }
 
     #[test]
-    fn enabled_providers_keep_display_order_and_skip_non_live_ones() {
+    fn enabled_providers_keep_display_order() {
         let mut settings = Settings {
             show_codex: true,
-            show_opencode_go: true,
             ..Settings::default()
         };
         assert_eq!(
-            enabled_live_providers(&settings),
+            enabled_providers(&settings),
             [ProviderId::Claude, ProviderId::ChatGpt]
         );
         settings.show_claude_code = false;
-        assert_eq!(enabled_live_providers(&settings), [ProviderId::ChatGpt]);
+        assert_eq!(enabled_providers(&settings), [ProviderId::ChatGpt]);
     }
 
     #[test]

@@ -31,16 +31,13 @@ impl Registry {
         settings: &Settings,
     ) -> Vec<(ProviderId, Result<UsageWindows, Error>)> {
         let mut out = Vec::new();
-        for provider in ProviderId::LIVE_USAGE {
+        for provider in ProviderId::ALL {
             if !settings.is_provider_enabled(provider) {
                 continue;
             }
             let result = match provider {
                 ProviderId::Claude => self.claude.poll(http),
                 ProviderId::ChatGpt => self.chatgpt.poll(http),
-                ProviderId::OpenCodeGo => {
-                    unreachable!("OpenCode Go has no live usage provider yet")
-                }
             };
             out.push((provider, result));
         }
@@ -56,7 +53,6 @@ impl Registry {
         let locator = match id {
             ProviderId::Claude => self.claude.locator(),
             ProviderId::ChatGpt => self.chatgpt.locator(),
-            ProviderId::OpenCodeGo => return refresh::Outcome::CliMissing,
         };
         match locator.first_available() {
             Some(src) => orchestrator.refresh(src),
@@ -80,18 +76,6 @@ mod tests {
     use super::*;
     use crate::net::USER_AGENT;
 
-    #[test]
-    fn live_usage_excludes_opencode_go() {
-        // `poll_enabled` relies on this for its `unreachable!` arm.
-        assert!(!ProviderId::LIVE_USAGE.contains(&ProviderId::OpenCodeGo));
-        for provider in ProviderId::ALL {
-            assert_eq!(
-                ProviderId::LIVE_USAGE.contains(&provider),
-                provider.metadata().live_usage
-            );
-        }
-    }
-
     /// Polls the real providers with the credentials on this machine. Run by
     /// hand: `cargo test -- --ignored live_poll --nocapture`.
     #[test]
@@ -104,7 +88,7 @@ mod tests {
         }
         let mut registry = Registry::with_defaults();
         let results = registry.poll_enabled(&http, &settings);
-        assert_eq!(results.len(), ProviderId::LIVE_USAGE.len());
+        assert_eq!(results.len(), ProviderId::ALL.len());
         for (provider, result) in results {
             match result {
                 Ok(w) => println!(

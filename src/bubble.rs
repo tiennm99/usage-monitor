@@ -263,7 +263,7 @@ fn set_size(window: &WebviewWindow, (w, h): (i32, i32)) {
 
 /// Bubble windows that exist, with their provider, in display order.
 fn windows(app: &AppHandle) -> Vec<(ProviderId, WebviewWindow)> {
-    ProviderId::LIVE_USAGE
+    ProviderId::ALL
         .into_iter()
         .filter_map(|p| {
             app.get_webview_window(&runtime::bubble_label(p))
@@ -438,7 +438,6 @@ pub fn mark_ready(app: &AppHandle, label: &str) -> Result<(), String> {
     let provider = label
         .strip_prefix(BUBBLE_LABEL_PREFIX)
         .and_then(ProviderId::from_slug)
-        .filter(|p| p.metadata().live_usage)
         .ok_or_else(|| "not a bubble window".to_string())?;
     if app.get_webview_window(label).is_none() {
         return Err("no such bubble window".into());

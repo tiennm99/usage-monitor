@@ -163,7 +163,6 @@ pub fn default_position(
     let stagger = match model {
         ProviderId::Claude => 0,
         ProviderId::ChatGpt => height_px + STAGGER_GAP,
-        ProviderId::OpenCodeGo => 2 * (height_px + STAGGER_GAP),
     };
     let x = work_area.r - width_px - STAGGER_GAP;
     let y = work_area.b - height_px - STAGGER_GAP - stagger;
@@ -210,7 +209,7 @@ pub struct SnapInput {
     pub dpi: u32,
     /// Docked taskbar edge and rect, when the platform reports one.
     pub taskbar: Option<(Edge, Rect)>,
-    /// Outer rects of the other bubbles, in `ProviderId::LIVE_USAGE` order.
+    /// Outer rects of the other bubbles, in `ProviderId::ALL` order.
     pub peers: Vec<Rect>,
 }
 
@@ -498,10 +497,6 @@ mod tests {
         assert_eq!(
             default_position(WA, w, h, ProviderId::ChatGpt),
             Point::new(1696, 1040 - 66 - 24 - 90)
-        );
-        assert_eq!(
-            default_position(WA, w, h, ProviderId::OpenCodeGo),
-            Point::new(1696, 1040 - 66 - 24 - 180)
         );
     }
 

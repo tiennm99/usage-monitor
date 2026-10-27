@@ -205,7 +205,7 @@ pub fn build(input: MenuInput<'_>) -> Vec<MenuEntry> {
                 MenuCommand::ToggleProvider(p),
                 s.provider_label(p),
                 settings.is_provider_enabled(p),
-                p.metadata().live_usage,
+                true,
             )
         })
         .collect();
@@ -360,7 +360,6 @@ mod tests {
             poll_interval_ms: POLL_15_MIN,
             update_check_interval_secs: Some(UPDATE_CHECK_DAILY_SECS),
             show_codex: true,
-            show_opencode_go: true,
             widget_visible: false,
             ..Settings::default()
         };
@@ -371,9 +370,6 @@ mod tests {
         assert!(!checked(&m, "update-interval:off"));
         assert!(checked(&m, "provider:claude"));
         assert!(checked(&m, "provider:chatgpt"));
-        // OpenCode Go mirrors its flag but stays greyed.
-        assert!(checked(&m, "provider:opencode-go"));
-        assert!(!enabled(&m, "provider:opencode-go"));
         assert!(checked(&m, "autostart"));
         assert!(!checked(&m, "toggle-widget"));
     }
@@ -524,7 +520,6 @@ mod tests {
             "Providers >",
             "  Claude Code [provider:claude] on",
             "  Codex [provider:chatgpt] off",
-            "  OpenCode Go [provider:opencode-go] off grey",
             "Settings >",
             &autostart,
             "  Reset position [reset-position]",
@@ -572,7 +567,7 @@ mod tests {
         }
         let mut commands = Vec::new();
         walk(&m, &mut commands);
-        assert_eq!(commands.len(), 21);
+        assert_eq!(commands.len(), 20);
         for c in commands {
             assert_eq!(MenuCommand::parse(&c.id()), Some(c), "{}", c.id());
         }

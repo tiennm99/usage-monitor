@@ -14,7 +14,6 @@ use crate::usage::ProviderId;
 
 const FIVE_HOURS_SECS: u64 = 5 * 60 * 60;
 const SEVEN_DAYS_SECS: u64 = 7 * 24 * 60 * 60;
-const THIRTY_DAYS_SECS: u64 = 30 * 24 * 60 * 60;
 
 /// Placeholder for the head label and weekly countdown before the first poll.
 const PENDING: &str = "…";
@@ -25,7 +24,6 @@ const PENDING: &str = "…";
 pub fn window_durations_secs(provider: ProviderId) -> (u64, u64) {
     match provider {
         ProviderId::Claude | ProviderId::ChatGpt => (FIVE_HOURS_SECS, SEVEN_DAYS_SECS),
-        ProviderId::OpenCodeGo => (SEVEN_DAYS_SECS, THIRTY_DAYS_SECS),
     }
 }
 
@@ -338,13 +336,5 @@ mod tests {
         ] {
             assert!(panel.get(key).is_some(), "missing {key}");
         }
-    }
-
-    #[test]
-    fn opencode_go_uses_weekly_and_monthly_windows() {
-        assert_eq!(
-            window_durations_secs(ProviderId::OpenCodeGo),
-            (604_800, 2_592_000)
-        );
     }
 }

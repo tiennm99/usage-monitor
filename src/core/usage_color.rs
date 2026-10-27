@@ -19,7 +19,6 @@ pub fn accent_color_for(model: ProviderId, is_dark: bool) -> Color {
                 Color::from_hex("#1A1A1A")
             }
         }
-        ProviderId::OpenCodeGo => Color::from_hex("#3BAE75"),
     }
 }
 
@@ -74,7 +73,6 @@ mod tests {
     fn safe_band_uses_theme_aware_accent() {
         assert_eq!(hex(ProviderId::ChatGpt, true, 10.0), "#E5E5E5");
         assert_eq!(hex(ProviderId::ChatGpt, false, 10.0), "#1A1A1A");
-        assert_eq!(hex(ProviderId::OpenCodeGo, false, 0.0), "#3BAE75");
         assert_eq!(
             accent_color_for(ProviderId::Claude, false),
             accent_color_for(ProviderId::Claude, true)

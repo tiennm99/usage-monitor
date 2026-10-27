@@ -182,9 +182,6 @@ Use the right-click **Providers** menu to choose what is shown:
 
 - **Claude Code** is enabled by default
 - **Codex** can be enabled alongside Claude Code or shown by itself
-- **OpenCode Go** is listed for future support; usage bars remain disabled
-  until OpenCode exposes a stable quota source or console integration is
-  explicitly enabled
 
 When multiple providers are shown, each gets its own bubble that you can position
 independently.

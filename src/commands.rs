@@ -24,7 +24,7 @@ pub fn get_bubble_state(
     runtime: State<'_, Arc<Runtime>>,
     provider: String,
 ) -> Result<BubblePayload, String> {
-    let provider = live_provider(&provider)?;
+    let provider = parse_provider(&provider)?;
     let scale = window.scale_factor().map_err(|err| err.to_string())?;
     Ok(runtime.bubble_payload(provider, scale))
 }
@@ -66,7 +66,7 @@ pub fn bubble_ready(app: AppHandle, label: String) -> Result<(), String> {
 /// running inside the webview's IPC callback.
 #[tauri::command]
 pub async fn bubble_click(runtime: State<'_, Arc<Runtime>>, slug: String) -> Result<(), String> {
-    let provider = live_provider(&slug)?;
+    let provider = parse_provider(&slug)?;
     runtime.bubble_clicked(provider);
     Ok(())
 }
@@ -74,7 +74,7 @@ pub async fn bubble_click(runtime: State<'_, Arc<Runtime>>, slug: String) -> Res
 /// The page is about to start an OS drag of a bubble.
 #[tauri::command]
 pub fn bubble_drag_start(app: AppHandle, slug: String) -> Result<(), String> {
-    let provider = live_provider(&slug)?;
+    let provider = parse_provider(&slug)?;
     bubble::drag_start(&app, provider);
     Ok(())
 }
@@ -96,10 +96,8 @@ fn resize_delta(dir: i32) -> Result<i32, String> {
     }
 }
 
-fn live_provider(slug: &str) -> Result<ProviderId, String> {
-    ProviderId::from_slug(slug)
-        .filter(|p| p.metadata().live_usage)
-        .ok_or_else(|| "unknown provider".to_string())
+fn parse_provider(slug: &str) -> Result<ProviderId, String> {
+    ProviderId::from_slug(slug).ok_or_else(|| "unknown provider".to_string())
 }
 
 /// One log line: control characters become spaces, so a message cannot
@@ -117,12 +115,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_live_providers_are_accepted() {
-        assert_eq!(live_provider("claude"), Ok(ProviderId::Claude));
-        assert_eq!(live_provider("chatgpt"), Ok(ProviderId::ChatGpt));
-        assert!(live_provider("opencode-go").is_err());
-        assert!(live_provider("").is_err());
-        assert!(live_provider("CLAUDE").is_err());
+    fn only_known_providers_are_accepted() {
+        assert_eq!(parse_provider("claude"), Ok(ProviderId::Claude));
+        assert_eq!(parse_provider("chatgpt"), Ok(ProviderId::ChatGpt));
+        assert!(parse_provider("codex").is_err());
+        assert!(parse_provider("").is_err());
+        assert!(parse_provider("CLAUDE").is_err());
     }
 
     #[test]

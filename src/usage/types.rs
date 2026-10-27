@@ -12,19 +12,15 @@ pub enum ProviderId {
     Claude,
     #[serde(rename = "chatgpt")]
     ChatGpt,
-    #[serde(rename = "opencode-go")]
-    OpenCodeGo,
 }
 
 impl ProviderId {
-    pub const ALL: [Self; 3] = [Self::Claude, Self::ChatGpt, Self::OpenCodeGo];
-    pub const LIVE_USAGE: [Self; 2] = [Self::Claude, Self::ChatGpt];
+    pub const ALL: [Self; 2] = [Self::Claude, Self::ChatGpt];
 
     pub fn slug(self) -> &'static str {
         match self {
             Self::Claude => "claude",
             Self::ChatGpt => "chatgpt",
-            Self::OpenCodeGo => "opencode-go",
         }
     }
 
@@ -32,51 +28,6 @@ impl ProviderId {
     pub fn from_slug(slug: &str) -> Option<Self> {
         Self::ALL.into_iter().find(|p| p.slug() == slug)
     }
-
-    pub fn metadata(self) -> ProviderMetadata {
-        match self {
-            Self::Claude => ProviderMetadata {
-                id: self,
-                slug: "claude",
-                default_enabled: true,
-                tray_icon_id: 1,
-                display_mode: ProviderDisplayMode::TwoWindow,
-                live_usage: true,
-            },
-            Self::ChatGpt => ProviderMetadata {
-                id: self,
-                slug: "chatgpt",
-                default_enabled: false,
-                tray_icon_id: 2,
-                display_mode: ProviderDisplayMode::TwoWindow,
-                live_usage: true,
-            },
-            Self::OpenCodeGo => ProviderMetadata {
-                id: self,
-                slug: "opencode-go",
-                default_enabled: false,
-                tray_icon_id: 3,
-                display_mode: ProviderDisplayMode::WeeklyMonthlyFourBar,
-                live_usage: false,
-            },
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ProviderDisplayMode {
-    TwoWindow,
-    WeeklyMonthlyFourBar,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub struct ProviderMetadata {
-    pub id: ProviderId,
-    pub slug: &'static str,
-    pub default_enabled: bool,
-    pub tray_icon_id: u32,
-    pub display_mode: ProviderDisplayMode,
-    pub live_usage: bool,
 }
 
 /// One usage window: how much you've consumed (0–100), and when it resets.
@@ -110,7 +61,6 @@ mod tests {
             let json = serde_json::to_string(&provider).expect("serialise");
             assert_eq!(json, format!("\"{}\"", provider.slug()));
             assert_eq!(ProviderId::from_slug(provider.slug()), Some(provider));
-            assert_eq!(provider.metadata().slug, provider.slug());
         }
         assert_eq!(ProviderId::from_slug("codex"), None);
     }

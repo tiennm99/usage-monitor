@@ -40,9 +40,6 @@ fn default_show_claude() -> bool {
 fn default_show_codex() -> bool {
     false
 }
-fn default_show_opencode_go() -> bool {
-    false
-}
 fn default_widget_visible() -> bool {
     true
 }
@@ -60,7 +57,6 @@ fn default_update_check_interval_secs() -> Option<u64> {
 pub struct BubblePositions {
     pub claude: Option<(i32, i32)>,
     pub codex: Option<(i32, i32)>,
-    pub opencode_go: Option<(i32, i32)>,
 }
 
 impl BubblePositions {
@@ -68,27 +64,23 @@ impl BubblePositions {
         match provider {
             ProviderId::Claude => self.claude,
             ProviderId::ChatGpt => self.codex,
-            ProviderId::OpenCodeGo => self.opencode_go,
         }
     }
     pub fn set(&mut self, provider: ProviderId, pos: (i32, i32)) {
         match provider {
             ProviderId::Claude => self.claude = Some(pos),
             ProviderId::ChatGpt => self.codex = Some(pos),
-            ProviderId::OpenCodeGo => self.opencode_go = Some(pos),
         }
     }
     pub fn reset(&mut self, provider: ProviderId) {
         match provider {
             ProviderId::Claude => self.claude = None,
             ProviderId::ChatGpt => self.codex = None,
-            ProviderId::OpenCodeGo => self.opencode_go = None,
         }
     }
     pub fn reset_all(&mut self) {
         self.claude = None;
         self.codex = None;
-        self.opencode_go = None;
     }
 
     /// Drop any saved position whose top-left no longer falls on one of
@@ -115,8 +107,6 @@ pub struct Settings {
     pub show_claude_code: bool,
     #[serde(default = "default_show_codex")]
     pub show_codex: bool,
-    #[serde(default = "default_show_opencode_go")]
-    pub show_opencode_go: bool,
     #[serde(default)]
     pub bubble_positions: BubblePositions,
     #[serde(default = "default_bubble_size")]
@@ -136,7 +126,6 @@ impl Default for Settings {
         Self {
             show_claude_code: default_show_claude(),
             show_codex: default_show_codex(),
-            show_opencode_go: default_show_opencode_go(),
             bubble_positions: BubblePositions::default(),
             bubble_size_logical: default_bubble_size(),
             poll_interval_ms: default_poll_interval_ms(),
@@ -152,7 +141,6 @@ impl Settings {
         match provider {
             ProviderId::Claude => self.show_claude_code,
             ProviderId::ChatGpt => self.show_codex,
-            ProviderId::OpenCodeGo => self.show_opencode_go,
         }
     }
 
@@ -160,30 +148,23 @@ impl Settings {
         match provider {
             ProviderId::Claude => self.show_claude_code = enabled,
             ProviderId::ChatGpt => self.show_codex = enabled,
-            ProviderId::OpenCodeGo => self.show_opencode_go = enabled,
         }
     }
 
-    pub fn toggle_provider(&mut self, provider: ProviderId) {
+    /// Menu toggle for a provider. Unchecking the last enabled provider is
+    /// undone so the app always shows something. Returns the provider's new
+    /// state.
+    pub fn toggle_provider(&mut self, provider: ProviderId) -> bool {
         let enabled = !self.is_provider_enabled(provider);
         self.set_provider_enabled(provider, enabled);
-    }
-
-    /// Menu toggle for a provider. Providers without live usage cannot be
-    /// toggled, and unchecking the last enabled live provider is undone so
-    /// the app always shows something. Returns the provider's new state.
-    pub fn toggle_live_provider(&mut self, provider: ProviderId) -> bool {
-        if provider.metadata().live_usage {
-            self.toggle_provider(provider);
-            if !self.has_enabled_live_provider() {
-                self.set_provider_enabled(provider, true);
-            }
+        if !self.has_enabled_provider() {
+            self.set_provider_enabled(provider, true);
         }
         self.is_provider_enabled(provider)
     }
 
-    pub fn has_enabled_live_provider(&self) -> bool {
-        ProviderId::LIVE_USAGE
+    pub fn has_enabled_provider(&self) -> bool {
+        ProviderId::ALL
             .iter()
             .any(|provider| self.is_provider_enabled(*provider))
     }
@@ -310,8 +291,8 @@ fn parse(content: &str) -> Option<Settings> {
 
 /// Enforce the invariants a hand-edited file may break.
 fn normalise(mut settings: Settings) -> Settings {
-    // At least one live provider must be visible. Otherwise the app has nothing to show.
-    if !settings.has_enabled_live_provider() {
+    // At least one provider must be visible. Otherwise the app has nothing to show.
+    if !settings.has_enabled_provider() {
         settings.show_claude_code = true;
     }
     // Clamp bubble size to safe range in case settings.json was hand-edited.
@@ -408,7 +389,6 @@ mod tests {
 
         assert!(!settings.show_claude_code);
         assert!(settings.show_codex);
-        assert!(!settings.show_opencode_go);
         assert_eq!(
             settings.bubble_positions.get(ProviderId::Claude),
             Some((10, 20))
@@ -417,30 +397,32 @@ mod tests {
             settings.bubble_positions.get(ProviderId::ChatGpt),
             Some((30, 40))
         );
-        assert_eq!(settings.bubble_positions.get(ProviderId::OpenCodeGo), None);
     }
 
     #[test]
-    fn three_provider_settings_json_loads() {
+    fn retired_opencode_go_keys_are_ignored() {
         let json = r#"{
-            "show_claude_code": true,
-            "show_codex": false,
+            "show_claude_code": false,
+            "show_codex": true,
             "show_opencode_go": true,
             "bubble_positions": {
+                "codex": [30, 40],
                 "opencode_go": [50, 60]
             }
         }"#;
 
         let settings: Settings =
-            serde_json::from_str(json).expect("new settings json should parse");
+            serde_json::from_str(json).expect("settings with retired keys should parse");
 
-        assert!(settings.show_claude_code);
-        assert!(!settings.show_codex);
-        assert!(settings.show_opencode_go);
+        assert!(!settings.show_claude_code);
+        assert!(settings.show_codex);
         assert_eq!(
-            settings.bubble_positions.get(ProviderId::OpenCodeGo),
-            Some((50, 60))
+            settings.bubble_positions.get(ProviderId::ChatGpt),
+            Some((30, 40))
         );
+        let keys = serde_json::to_value(&settings).expect("serialise");
+        assert!(keys.get("show_opencode_go").is_none());
+        assert!(keys["bubble_positions"].get("opencode_go").is_none());
     }
 
     #[test]
@@ -518,10 +500,9 @@ mod tests {
     }
 
     #[test]
-    fn normalise_restores_a_live_provider_and_clamps_size() {
+    fn normalise_restores_a_provider_and_clamps_size() {
         let settings = parse_and_normalise(
-            r#"{"show_claude_code": false, "show_codex": false, "show_opencode_go": true,
-                "bubble_size_logical": 9000}"#,
+            r#"{"show_claude_code": false, "show_codex": false, "bubble_size_logical": 9000}"#,
         );
         assert!(settings.show_claude_code);
         assert_eq!(settings.bubble_size_logical, MAX_BUBBLE_SIZE);
@@ -543,7 +524,6 @@ mod tests {
                 "poll_interval_ms",
                 "show_claude_code",
                 "show_codex",
-                "show_opencode_go",
                 "update_check_interval_secs",
                 "widget_visible",
             ]
@@ -557,15 +537,13 @@ mod tests {
     #[test]
     fn offscreen_positions_are_dropped_against_monitors() {
         let mut settings = parse_and_normalise(
-            r#"{"bubble_positions": {"claude": [100, 100], "codex": [-3000, 100],
-                "opencode_go": [2000, 500]}}"#,
+            r#"{"bubble_positions": {"claude": [100, 100], "codex": [-3000, 100]}}"#,
         );
         let monitors = [Rect::new(0, 0, 1920, 1080), Rect::new(1920, 0, 3840, 1080)];
         drop_offscreen_positions(&mut settings, &monitors);
         let p = &settings.bubble_positions;
         assert_eq!(p.get(ProviderId::Claude), Some((100, 100)));
         assert_eq!(p.get(ProviderId::ChatGpt), None);
-        assert_eq!(p.get(ProviderId::OpenCodeGo), Some((2000, 500)));
     }
 
     #[test]
@@ -617,27 +595,15 @@ mod tests {
     }
 
     #[test]
-    fn toggle_keeps_provider_flags_independent() {
+    fn toggle_never_disables_the_last_provider() {
         let mut settings = Settings::default();
-        settings.toggle_provider(ProviderId::ChatGpt);
-        assert!(settings.is_provider_enabled(ProviderId::ChatGpt));
-        settings.toggle_provider(ProviderId::Claude);
-        assert!(!settings.is_provider_enabled(ProviderId::Claude));
-        assert!(settings.has_enabled_live_provider());
-        settings.toggle_provider(ProviderId::ChatGpt);
-        assert!(!settings.has_enabled_live_provider());
-    }
-
-    #[test]
-    fn live_toggle_never_disables_the_last_live_provider() {
-        let mut settings = Settings::default();
-        assert!(settings.toggle_live_provider(ProviderId::Claude));
-        assert!(settings.show_claude_code);
-        assert!(settings.toggle_live_provider(ProviderId::ChatGpt));
-        assert!(!settings.toggle_live_provider(ProviderId::Claude));
-        assert!(settings.toggle_live_provider(ProviderId::ChatGpt));
-        // OpenCode Go has no live usage, so its flag never changes.
-        assert!(!settings.toggle_live_provider(ProviderId::OpenCodeGo));
-        assert!(!settings.show_opencode_go);
+        assert!(settings.toggle_provider(ProviderId::ChatGpt));
+        assert!(!settings.toggle_provider(ProviderId::Claude));
+        assert!(settings.has_enabled_provider());
+        // ChatGPT is now the only enabled provider, so it stays on.
+        assert!(settings.toggle_provider(ProviderId::ChatGpt));
+        assert!(settings.show_codex);
+        assert!(settings.toggle_provider(ProviderId::Claude));
+        assert!(!settings.toggle_provider(ProviderId::ChatGpt));
     }
 }

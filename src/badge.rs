@@ -126,8 +126,6 @@ fn base_color(kind: ProviderId) -> [u8; 3] {
         ProviderId::Claude => [0x2a, 0x1f, 0x1c],
         // Cool dark slate for Codex.
         ProviderId::ChatGpt => [0x1a, 0x1f, 0x26],
-        // Deep green for OpenCode Go.
-        ProviderId::OpenCodeGo => [0x12, 0x2a, 0x20],
     }
 }
 
@@ -178,7 +176,7 @@ mod tests {
 
     #[test]
     fn arc_starts_at_twelve_o_clock_for_any_percent() {
-        for kind in ProviderId::LIVE_USAGE {
+        for kind in ProviderId::ALL {
             for pct in [0.5, 1.0, 25.0, 59.9, 60.0, 80.0, 95.0, 100.0, 150.0] {
                 let pixmap = render_pixmap(kind, Some(pct));
                 assert_eq!(
