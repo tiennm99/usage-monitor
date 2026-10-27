@@ -489,6 +489,45 @@ pub fn apply(app: &AppHandle, action: Action) {
     }
 }
 
+/// Show every ready bubble again and put it back on top, unless the
+/// bubbles are meant to be hidden. Another always-on-top window, or a shell
+/// action that hid ours, can otherwise leave a bubble covered or hidden for
+/// good. A bubble still waiting for its page is left to the ready handshake.
+/// Visibility is read on the main thread, after any hide queued before.
+pub fn bring_back(app: &AppHandle) {
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        let shows = runtime_of(&handle).is_some_and(|r| r.with_state(|s| s.visibility.shows()));
+        if !shows {
+            return;
+        }
+        for (_, window) in windows(&handle) {
+            if with_pending(|p| p.contains_key(window.label())) {
+                continue;
+            }
+            show(&window);
+            raise(&window);
+        }
+    });
+    if let Err(err) = queued {
+        log::warn!("bubble bring-back could not reach the main thread: {err}");
+    }
+}
+
+fn raise(window: &WebviewWindow) {
+    #[cfg(windows)]
+    let result = platform::windows::raise_topmost(window).map_err(|e| e.to_string());
+    // Re-setting the same level is a no-op, so drop it and set it again.
+    #[cfg(not(windows))]
+    let result = window
+        .set_always_on_top(false)
+        .and_then(|()| window.set_always_on_top(true))
+        .map_err(|e| e.to_string());
+    if let Err(err) = result {
+        log::warn!("{} not raised: {err}", window.label());
+    }
+}
+
 /// Make every bubble ignore the mouse, or take it again.
 pub fn set_click_through(app: &AppHandle, ignore: bool) {
     let handle = app.clone();

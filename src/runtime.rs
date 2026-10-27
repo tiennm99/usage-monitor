@@ -506,6 +506,12 @@ impl Runtime {
         bubble::set_click_through(&self.ui.app, ignore);
     }
 
+    /// Show the bubbles again and put them back on top, unless they are
+    /// meant to be hidden.
+    pub fn bring_back_bubbles(&self) {
+        bubble::bring_back(&self.ui.app);
+    }
+
     /// Apply a visibility event to every bubble. A user show or hide is
     /// also saved as `widget_visible`.
     pub fn apply_visibility(&self, event: visibility::Event) {

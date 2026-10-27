@@ -2,10 +2,13 @@
 //! fullscreen window of another process is in the foreground, and hides the
 //! bubbles while one is. They come back without activation when it leaves,
 //! unless the user hid them in the meantime.
+//!
+//! The same thread brings the bubbles back every minute while they should
+//! show, in case another window covered or hid them.
 
 use std::io;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use crate::core::visibility::Event;
 use crate::platform::{self, FullscreenCheck};
@@ -14,13 +17,21 @@ use crate::runtime::Runtime;
 /// How often the foreground window is checked.
 pub const CHECK_INTERVAL: Duration = Duration::from_millis(1500);
 
+/// How often shown bubbles are brought back on top.
+pub const BRING_BACK_INTERVAL: Duration = Duration::from_secs(60);
+
 /// Start the check thread. It runs until the process starts exiting.
 pub fn spawn(runtime: Arc<Runtime>) -> io::Result<()> {
     std::thread::Builder::new()
         .name("fullscreen".into())
         .spawn(move || {
+            let mut last_bring_back = Instant::now();
             while !runtime.is_exiting() {
                 tick(&runtime);
+                if last_bring_back.elapsed() >= BRING_BACK_INTERVAL {
+                    last_bring_back = Instant::now();
+                    runtime.bring_back_bubbles();
+                }
                 std::thread::sleep(CHECK_INTERVAL);
             }
         })

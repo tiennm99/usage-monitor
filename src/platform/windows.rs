@@ -28,9 +28,9 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindowLongPtrW, GetWindowRect, GetWindowThreadProcessId,
     IsIconic, IsWindowVisible, MessageBoxW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos,
-    ShowWindow, GWL_EXSTYLE, GWL_STYLE, MA_NOACTIVATE, MB_ICONERROR, MB_OK, MB_SETFOREGROUND,
-    SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE,
-    SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
+    ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST, MA_NOACTIVATE, MB_ICONERROR, MB_OK,
+    MB_SETFOREGROUND, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER,
+    SW_HIDE, SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
     WM_SETTINGCHANGE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
 };
 
@@ -291,6 +291,26 @@ pub fn show_no_activate(window: &tauri::WebviewWindow) -> io::Result<()> {
     // the previous visibility, not an error.
     let _ = unsafe { ShowWindow(hwnd, SW_SHOWNOACTIVATE) };
     Ok(())
+}
+
+/// Put a bubble back at the top of the always-on-top band, above any
+/// topmost window that came after it, without activating it.
+pub fn raise_topmost(window: &tauri::WebviewWindow) -> io::Result<()> {
+    let hwnd = hwnd_of(window)?;
+    // SAFETY: `hwnd` is a live window of this process; nothing moves,
+    // resizes or activates.
+    unsafe {
+        SetWindowPos(
+            hwnd,
+            Some(HWND_TOPMOST),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
+    }
+    .map_err(io::Error::from)
 }
 
 /// Hide a bubble (see [`show_no_activate`]).
