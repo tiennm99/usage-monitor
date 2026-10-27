@@ -6,7 +6,8 @@
 //! The same thread brings the bubbles back every minute while they should
 //! show, in case another window covered or hid them. On Windows it also
 //! re-raises, on every check, a bubble that another app's always-on-top
-//! window (a chat toast, say) has just covered.
+//! window (a chat toast, say) covers, as a backstop for the z-order watch
+//! in `bubble.rs`.
 
 use std::io;
 use std::sync::Arc;

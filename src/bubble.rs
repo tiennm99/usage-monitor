@@ -15,9 +15,7 @@
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
-use std::time::Duration;
-#[cfg(not(windows))]
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use tauri::{
     AppHandle, Manager, Monitor, PhysicalPosition, PhysicalSize, WebviewUrl, WebviewWindow,
@@ -416,6 +414,7 @@ fn prepare_native(
         if click_through {
             set_ignore_cursor(&window, true);
         }
+        watch_z_order(&hook_app);
         let hooked = platform::windows::install_bubble_hook(&window, move |event| {
             on_hook_event(&hook_app, provider, event);
         });
@@ -536,22 +535,67 @@ pub fn bring_back(app: &AppHandle) {
 #[cfg(windows)]
 pub fn keep_on_top(app: &AppHandle) {
     let handle = app.clone();
-    let queued = app.run_on_main_thread(move || {
-        let shows = runtime_of(&handle).is_some_and(|r| r.with_state(|s| s.visibility.shows()));
-        if !shows {
-            return;
-        }
-        for (_, window) in windows(&handle) {
-            match platform::windows::covered_by_other_topmost(&window) {
-                Ok(true) => raise(&window),
-                Ok(false) => {}
-                Err(err) => log::warn!("{} on-top check failed: {err}", window.label()),
-            }
-        }
-    });
+    let queued = app.run_on_main_thread(move || raise_covered(&handle));
     if let Err(err) = queued {
         log::warn!("bubble on-top check could not reach the main thread: {err}");
     }
+}
+
+/// Most raises in [`RAISE_WINDOW`] before raising pauses until it ends, so
+/// another app that also fights for the top cannot keep both busy; the
+/// fullscreen check carries on at its own pace.
+#[cfg(windows)]
+const MAX_RAISES: u32 = 20;
+#[cfg(windows)]
+const RAISE_WINDOW: Duration = Duration::from_secs(1);
+
+/// Body of [`keep_on_top`]; runs on the main thread.
+#[cfg(windows)]
+fn raise_covered(app: &AppHandle) {
+    static RAISES: Mutex<Option<(Instant, u32)>> = Mutex::new(None);
+    let shows = runtime_of(app).is_some_and(|r| r.with_state(|s| s.visibility.shows()));
+    if !shows {
+        return;
+    }
+    for (_, window) in windows(app) {
+        match platform::windows::covered_by_other_topmost(&window) {
+            Ok(true) => {}
+            Ok(false) => continue,
+            Err(err) => {
+                log::warn!("{} on-top check failed: {err}", window.label());
+                continue;
+            }
+        }
+        let allowed = {
+            let mut raises = RAISES.lock().unwrap_or_else(PoisonError::into_inner);
+            let now = Instant::now();
+            let (start, count) = raises.get_or_insert((now, 0));
+            if now.duration_since(*start) >= RAISE_WINDOW {
+                (*start, *count) = (now, 0);
+            }
+            *count += 1;
+            if *count == MAX_RAISES + 1 {
+                log::warn!("bubble raises paused: another window keeps taking the top");
+            }
+            *count <= MAX_RAISES
+        };
+        if allowed {
+            raise(&window);
+        }
+    }
+}
+
+/// Raise covered bubbles the moment another app shows a window or changes
+/// the z-order. Installed once, on the main thread.
+#[cfg(windows)]
+fn watch_z_order(app: &AppHandle) {
+    static WATCHING: std::sync::Once = std::sync::Once::new();
+    WATCHING.call_once(|| {
+        let handle = app.clone();
+        if let Err(err) = platform::windows::watch_z_order(move || raise_covered(&handle)) {
+            log::warn!("z-order watch unavailable, relying on the periodic check: {err}");
+        }
+    });
 }
 
 fn raise(window: &WebviewWindow) {

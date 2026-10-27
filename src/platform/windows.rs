@@ -1,5 +1,6 @@
 //! Windows-only helpers. This is the only module that talks to Win32 APIs.
 
+use std::cell::RefCell;
 use std::io;
 use std::path::Path;
 use std::time::Duration;
@@ -20,6 +21,7 @@ use windows::Win32::Graphics::Gdi::{
     GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
 };
 use windows::Win32::System::Threading::{OpenProcess, WaitForSingleObject, PROCESS_SYNCHRONIZE};
+use windows::Win32::UI::Accessibility::{SetWinEventHook, HWINEVENTHOOK};
 use windows::Win32::UI::Shell::{
     DefSubclassProc, RemoveWindowSubclass, SHAppBarMessage,
     SetCurrentProcessExplicitAppUserModelID, SetWindowSubclass, ABE_BOTTOM, ABE_LEFT, ABE_RIGHT,
@@ -28,11 +30,13 @@ use windows::Win32::UI::Shell::{
 use windows::Win32::UI::WindowsAndMessaging::{
     GetClassNameW, GetForegroundWindow, GetWindow, GetWindowLongPtrW, GetWindowRect,
     GetWindowThreadProcessId, IsIconic, IsWindowVisible, MessageBoxW, SetForegroundWindow,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOPMOST,
-    MA_NOACTIVATE, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, SWP_FRAMECHANGED, SWP_NOACTIVATE,
-    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE,
-    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETTINGCHANGE, WS_EX_LAYERED,
-    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, CHILDID_SELF, EVENT_OBJECT_REORDER,
+    EVENT_OBJECT_SHOW, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOPMOST, MA_NOACTIVATE,
+    MB_ICONERROR, MB_OK, MB_SETFOREGROUND, OBJID_WINDOW, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+    SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WINEVENT_OUTOFCONTEXT,
+    WINEVENT_SKIPOWNPROCESS, WM_DISPLAYCHANGE, WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY,
+    WM_SETTINGCHANGE, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WS_EX_TRANSPARENT,
 };
 
 use crate::core::geom::{self, Edge, Rect};
@@ -370,6 +374,67 @@ fn covers(other: HWND, ours: &Rect, own_pid: u32) -> bool {
         return false;
     }
     visible_window_bounds(other).is_some_and(|(theirs, _)| theirs.intersects(ours))
+}
+
+thread_local! {
+    /// The callback of [`watch_z_order`], on the thread that installed it.
+    static Z_ORDER_CALLBACK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+}
+
+/// Call `callback` as soon as a window of another process is shown or the
+/// z-order changes, so a bubble can go back on top of a new always-on-top
+/// window (a chat toast, say) at once instead of at the next poll. The
+/// events arrive through this thread's message loop, so install it on the
+/// main thread; the hook lives as long as the process.
+pub fn watch_z_order(callback: impl Fn() + 'static) -> io::Result<()> {
+    Z_ORDER_CALLBACK.with(|slot| *slot.borrow_mut() = Some(Box::new(callback)));
+    // SAFETY: an out-of-context hook needs no module handle; the procedure
+    // is a plain function that lives for the whole process.
+    let hook = unsafe {
+        SetWinEventHook(
+            EVENT_OBJECT_SHOW,
+            EVENT_OBJECT_REORDER,
+            None,
+            Some(z_order_event_proc),
+            0,
+            0,
+            WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS,
+        )
+    };
+    if hook.is_invalid() {
+        Z_ORDER_CALLBACK.with(|slot| slot.borrow_mut().take());
+        return Err(io::Error::other("SetWinEventHook failed"));
+    }
+    Ok(())
+}
+
+unsafe extern "system" fn z_order_event_proc(
+    _hook: HWINEVENTHOOK,
+    event: u32,
+    _hwnd: HWND,
+    id_object: i32,
+    id_child: i32,
+    _thread: u32,
+    _time: u32,
+) {
+    // Only whole windows count: a shown caret or cursor is an object too,
+    // and a hidden window cannot cover anything.
+    let relevant = match event {
+        EVENT_OBJECT_SHOW => id_object == OBJID_WINDOW.0 && id_child == CHILDID_SELF as i32,
+        EVENT_OBJECT_REORDER => true,
+        _ => false,
+    };
+    if relevant {
+        // `try_borrow` skips an event raised from inside the callback.
+        Z_ORDER_CALLBACK.with(|slot| {
+            let Ok(callback) = slot.try_borrow() else {
+                return;
+            };
+            if let Some(callback) = callback.as_ref() {
+                callback();
+            }
+        });
+    }
 }
 
 /// Hide a bubble (see [`show_no_activate`]).
