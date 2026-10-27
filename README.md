@@ -102,7 +102,8 @@ Grab `usage-monitor.exe` from the
 Put it in a folder of its own that you can write to (e.g.
 `%LOCALAPPDATA%\UsageMonitor\`) and run it. The app is portable: it keeps
 `settings.json` next to the exe, so moving the folder keeps your settings. It
-self-updates from the same Releases feed.
+updates itself from the same Releases feed: when a check finds a new
+release, it installs it and restarts on its own, with no click needed.
 
 **First-run note:** the binary is unsigned, so SmartScreen will show
 "Windows protected your PC". Click **More info** → **Run anyway**. Code
@@ -117,7 +118,7 @@ pick one:
 - `usage-monitor_X.Y.Z_amd64.AppImage`: make it executable
   (`chmod +x`) and run it. Like the Windows exe it is portable and keeps
   `settings.json` next to the AppImage file, so give it a folder you can
-  write to. The AppImage self-updates in place. If you turned on "Start
+  write to. The AppImage updates itself in place, the same way. If you turned on "Start
   at login" in v0.6.0 or earlier and the AppImage path contains a space,
   turn it off and on again once: those releases wrote the path unquoted,
   so the app never started at login.

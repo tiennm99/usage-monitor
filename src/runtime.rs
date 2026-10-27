@@ -657,8 +657,9 @@ impl Runtime {
 
     /// Blocking body of [`Self::check_for_updates`]. Only a check that got
     /// an answer is stamped as the last check; a failed one leaves the
-    /// stamp alone and has the scheduler retry sooner.
-    fn run_update_check(&self) {
+    /// stamp alone and has the scheduler retry sooner. A release found where
+    /// the app can replace itself is installed straight away.
+    fn run_update_check(self: &Arc<Self>) {
         let proxy = update::proxy_url(net::env_proxy().as_ref(), self.http.system_proxy());
         let outcome = update::check(&self.ui.app, proxy);
         let succeeded = outcome.is_ok();
@@ -700,6 +701,13 @@ impl Runtime {
             succeeded,
         });
         self.refresh_shell(false);
+        let auto_apply = self.with_state(|s| {
+            s.update_status == UpdateStatus::Available && s.update_channel.can_apply()
+        });
+        if auto_apply {
+            log::info!("update found; installing it without waiting for a click");
+            self.apply_update();
+        }
     }
 
     /// Download and install the release the last check found on a worker
