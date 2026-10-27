@@ -31,8 +31,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, GW_HWNDPREV, HWND_TOPMOST,
     MA_NOACTIVATE, MB_ICONERROR, MB_OK, MB_SETFOREGROUND, SWP_FRAMECHANGED, SWP_NOACTIVATE,
     SWP_NOMOVE, SWP_NOSIZE, SWP_NOZORDER, SW_HIDE, SW_SHOWNOACTIVATE, WM_DISPLAYCHANGE,
-    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETTINGCHANGE, WS_EX_NOACTIVATE,
-    WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+    WM_EXITSIZEMOVE, WM_MOUSEACTIVATE, WM_NCDESTROY, WM_SETTINGCHANGE, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST, WS_EX_TRANSPARENT,
 };
 
 use crate::core::geom::{self, Edge, Rect};
@@ -203,19 +203,34 @@ pub fn apply_toolwindow(window: &tauri::WebviewWindow) -> io::Result<()> {
     add_ex_style(window, WS_EX_TOOLWINDOW.0)
 }
 
+/// Let mouse input pass through a bubble to the windows below, or take it
+/// again. These are the bits tao's `set_ignore_cursor_events` sets, without
+/// its re-applying every window flag, which hides a bubble shown through
+/// [`show_no_activate`]. Run it on the window's own (main) thread.
+pub fn set_click_through(window: &tauri::WebviewWindow, ignore: bool) -> io::Result<()> {
+    set_ex_style(window, (WS_EX_TRANSPARENT | WS_EX_LAYERED).0, ignore)
+}
+
 /// OR `bits` into a window's extended style and apply the frame change.
 fn add_ex_style(window: &tauri::WebviewWindow, bits: u32) -> io::Result<()> {
+    set_ex_style(window, bits, true)
+}
+
+/// Set or clear `bits` in a window's extended style and apply the frame
+/// change.
+fn set_ex_style(window: &tauri::WebviewWindow, bits: u32, on: bool) -> io::Result<()> {
     let hwnd = hwnd_of(window)?;
-    let wanted = bits as isize;
+    let bits = bits as isize;
     // SAFETY: `hwnd` is a live top-level window of this process.
     let current = unsafe { GetWindowLongPtrW(hwnd, GWL_EXSTYLE) };
-    if current & wanted == wanted {
+    let wanted = if on { current | bits } else { current & !bits };
+    if wanted == current {
         return Ok(());
     }
     // SAFETY: as above. A zero return is only an error when the last error
     // is set, so it is cleared first.
     unsafe { SetLastError(WIN32_ERROR(0)) };
-    let previous = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, current | wanted) };
+    let previous = unsafe { SetWindowLongPtrW(hwnd, GWL_EXSTYLE, wanted) };
     if previous == 0 {
         let err = io::Error::last_os_error();
         if err.raw_os_error().unwrap_or(0) != 0 {

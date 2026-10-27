@@ -351,6 +351,8 @@ pub fn create(app: &AppHandle, provider: ProviderId) -> tauri::Result<()> {
         set_position(&window, placement.pos);
     }
     set_size(&window, placement.size);
+    // Windows applies it on the main thread, in `prepare_native`.
+    #[cfg(not(windows))]
     if click_through {
         set_ignore_cursor(&window, true);
     }
@@ -363,7 +365,7 @@ pub fn create(app: &AppHandle, provider: ProviderId) -> tauri::Result<()> {
         placement.dpi
     );
 
-    prepare_native(app, &window, provider);
+    prepare_native(app, &window, provider, click_through);
     #[cfg(target_os = "linux")]
     if let Some(is_dark) = platform::linux::portal_prefers_dark() {
         runtime.set_dark(is_dark);
@@ -399,12 +401,20 @@ pub fn create(app: &AppHandle, provider: ProviderId) -> tauri::Result<()> {
 /// move-end, setting-change and display-change messages. Both must run on
 /// the window's own (main) thread before the first show.
 #[cfg(windows)]
-fn prepare_native(app: &AppHandle, window: &WebviewWindow, provider: ProviderId) {
+fn prepare_native(
+    app: &AppHandle,
+    window: &WebviewWindow,
+    provider: ProviderId,
+    click_through: bool,
+) {
     let window = window.clone();
     let hook_app = app.clone();
     let queued = app.run_on_main_thread(move || {
         if let Err(err) = platform::windows::apply_no_activate(&window) {
             log::warn!("{} may take focus: {err}", window.label());
+        }
+        if click_through {
+            set_ignore_cursor(&window, true);
         }
         let hooked = platform::windows::install_bubble_hook(&window, move |event| {
             on_hook_event(&hook_app, provider, event);
@@ -419,7 +429,13 @@ fn prepare_native(app: &AppHandle, window: &WebviewWindow, provider: ProviderId)
 }
 
 #[cfg(not(windows))]
-fn prepare_native(_app: &AppHandle, _window: &WebviewWindow, _provider: ProviderId) {}
+fn prepare_native(
+    _app: &AppHandle,
+    _window: &WebviewWindow,
+    _provider: ProviderId,
+    _click_through: bool,
+) {
+}
 
 #[cfg(windows)]
 fn on_hook_event(app: &AppHandle, provider: ProviderId, event: platform::windows::BubbleHookEvent) {
@@ -565,8 +581,18 @@ pub fn set_click_through(app: &AppHandle, ignore: bool) {
     }
 }
 
+/// On Windows the style bits are set directly: tao's
+/// `set_ignore_cursor_events` re-applies all its window flags, and since
+/// bubbles are shown through [`show`], not tao, it believes them hidden and
+/// hides them, also dropping their no-activate and tool-window styles.
 fn set_ignore_cursor(window: &WebviewWindow, ignore: bool) {
-    if let Err(err) = window.set_ignore_cursor_events(ignore) {
+    #[cfg(windows)]
+    let result = platform::windows::set_click_through(window, ignore).map_err(|e| e.to_string());
+    #[cfg(not(windows))]
+    let result = window
+        .set_ignore_cursor_events(ignore)
+        .map_err(|e| e.to_string());
+    if let Err(err) = result {
         log::warn!("{} click-through not set: {err}", window.label());
     }
 }
