@@ -1034,6 +1034,7 @@ fn setup(app: &mut tauri::App, cli: &CliArgs) -> Result<(), Box<dyn Error>> {
         poll_interval: Duration::from_millis(u64::from(state.settings.poll_interval_ms)),
         update_interval_secs: state.settings.update_check_interval_secs,
         last_update_check_unix: state.settings.last_update_check_unix,
+        tz: jiff::tz::TimeZone::system(),
     };
     let providers = enabled_providers(&state.settings);
 

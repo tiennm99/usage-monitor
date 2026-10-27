@@ -172,6 +172,9 @@ primary monitor on first launch. Drag it where you want it, release to snap
 to the nearest edge if you let go close to one.
 
 - **Left-click** the bubble to open the expanded panel (5h + 7d + countdowns)
+- **Update frequency** sets how often usage is fetched. Fetches follow
+  your local clock: every 5 minutes means :00, :05, :10 and so on, and
+  every hour means the top of the hour
 - **Right-click** for **Refresh**, **Update frequency**, **Providers**,
   **Settings**, **Controls**, **Show widget**, **Click-through**,
   **Restart** and **Exit**.
@@ -258,9 +261,12 @@ What the app sends over the network:
 
 - Requests to Anthropic's Claude endpoints to read your usage
 - Requests to ChatGPT's Codex usage endpoint, if Codex is enabled
-- Requests for `latest.json` from GitHub Releases, hourly by default and at
-  launch when the last check is older than that. A failed check is retried
-  sooner, starting after a minute and backing off up to the interval. Set **Settings** → **Auto-update check** to
+- Requests for `latest.json` from GitHub Releases, hourly by default. Checks
+  run on your local clock: hourly at the top of each hour, daily at
+  midnight, weekly at midnight on Monday. At launch the app checks only if
+  such a time passed since its last check. A failed check is retried
+  sooner, starting after a minute and backing off, but never past the next
+  scheduled time. Set **Settings** → **Auto-update check** to
   **Disabled** in the right-click menu to stop them; **Check for updates**
   still works when you click it.
 

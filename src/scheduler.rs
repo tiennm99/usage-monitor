@@ -7,17 +7,20 @@
 //! each due [`Action`] to its [`SchedulerHost`]. A host must return quickly:
 //! slow work (HTTP, the CLI refresh) runs on worker threads it spawns.
 //!
-//! `Instant` stops while the machine sleeps, so the update check, which is
-//! due at a wall-clock time, is kept as a unix timestamp, and the thread
-//! wakes at least every [`MAX_WAIT`] to notice a resume (see
-//! [`resumed_from_sleep`]).
+//! The poll and the update check run on local clock boundaries (see
+//! [`clock_slot`]): a 5-minute poll at :00, :05, :10 and so on, a daily
+//! update check at midnight. `Instant` stops while the machine sleeps, so
+//! those deadlines are kept as unix timestamps, and the thread wakes at
+//! least every [`MAX_WAIT`] to notice a resume (see [`resumed_from_sleep`]).
 
 use std::io;
 use std::sync::mpsc::{Receiver, RecvTimeoutError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use crate::core::state::{update_check_due, UpdateCheckDue};
+use jiff::tz::TimeZone;
+
+use crate::core::state::{clock_slot, update_check_due, UpdateCheckDue};
 
 /// Shortest poll interval, guarding against a hand-edited `0` in the
 /// settings file turning into a busy loop.
@@ -42,7 +45,8 @@ const RESUME_THRESHOLD: Duration = Duration::from_secs(30);
 pub enum Message {
     /// Poll at once. The periodic poll deadline is left as it is.
     PollNow,
-    /// Change the poll interval and re-arm it from now, without polling.
+    /// Change the poll interval and re-arm it at its next boundary, without
+    /// polling.
     SetPollInterval(Duration),
     /// Re-render the countdowns after this delay; `None` clears the deadline.
     RecomputeCountdown(Option<Duration>),
@@ -53,9 +57,9 @@ pub enum Message {
         interval_secs: Option<u64>,
         last_check_unix: Option<u64>,
     },
-    /// An update check finished. Only this re-arms the check: after the
-    /// full interval when it succeeded, after a growing retry delay capped
-    /// at the interval when it failed.
+    /// An update check finished. Only this re-arms the check: at the next
+    /// boundary when it succeeded, after a growing retry delay capped at
+    /// that boundary when it failed.
     UpdateCheckDone {
         interval_secs: Option<u64>,
         succeeded: bool,
@@ -77,17 +81,21 @@ pub trait SchedulerHost {
 }
 
 /// Settings the deadlines start from.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 pub struct Config {
     pub poll_interval: Duration,
     pub update_interval_secs: Option<u64>,
     pub last_update_check_unix: Option<u64>,
+    /// The zone whose clock the poll and the update check follow.
+    pub tz: TimeZone,
 }
 
 #[derive(Debug)]
 pub struct Deadlines {
+    tz: TimeZone,
     poll_interval: Duration,
-    poll_at: Instant,
+    /// Unix seconds the next poll is due at.
+    poll_at_unix: u64,
     countdown_at: Option<Instant>,
     /// Unix seconds the next update check is due at.
     update_at_unix: Option<u64>,
@@ -98,15 +106,16 @@ pub struct Deadlines {
 impl Deadlines {
     /// Arm the deadlines at startup. Returns the actions due at once: the
     /// update check when the last one is older than its interval.
-    pub fn new(config: Config, now: Instant, now_unix: u64) -> (Self, Vec<Action>) {
-        let poll_interval = config.poll_interval.max(MIN_POLL_INTERVAL);
+    pub fn new(config: Config, now_unix: u64) -> (Self, Vec<Action>) {
         let mut deadlines = Self {
-            poll_interval,
-            poll_at: now + poll_interval,
+            tz: config.tz,
+            poll_interval: config.poll_interval.max(MIN_POLL_INTERVAL),
+            poll_at_unix: 0,
             countdown_at: None,
             update_at_unix: None,
             update_failures: 0,
         };
+        deadlines.poll_at_unix = deadlines.next_poll(now_unix);
         let actions = deadlines.arm_update(
             config.update_interval_secs,
             config.last_update_check_unix,
@@ -121,7 +130,7 @@ impl Deadlines {
             Message::PollNow => vec![Action::Poll],
             Message::SetPollInterval(interval) => {
                 self.poll_interval = interval.max(MIN_POLL_INTERVAL);
-                self.poll_at = now + self.poll_interval;
+                self.poll_at_unix = self.next_poll(now_unix);
                 Vec::new()
             }
             Message::RecomputeCountdown(delay) => {
@@ -136,29 +145,31 @@ impl Deadlines {
                 interval_secs,
                 succeeded,
             } => {
-                let delay = if succeeded {
-                    self.update_failures = 0;
-                    interval_secs.map(update_interval)
-                } else {
-                    let delay = interval_secs.map(|secs| self.retry_delay(secs));
-                    self.update_failures = self.update_failures.saturating_add(1);
-                    delay
-                };
-                self.update_at_unix = delay.map(|d| now_unix.saturating_add(d.as_secs()));
+                self.update_at_unix = interval_secs.map(|secs| {
+                    let next = self.next_update(secs, now_unix);
+                    if succeeded {
+                        self.update_failures = 0;
+                        next
+                    } else {
+                        let retry = now_unix.saturating_add(self.retry_delay().as_secs());
+                        self.update_failures = self.update_failures.saturating_add(1);
+                        retry.min(next)
+                    }
+                });
                 Vec::new()
             }
             Message::Shutdown => Vec::new(),
         }
     }
 
-    /// Fire every deadline that has passed. The poll re-arms for a full
-    /// interval; the countdown and update check stay disarmed until the
+    /// Fire every deadline that has passed. The poll re-arms at its next
+    /// boundary; the countdown and update check stay disarmed until the
     /// host re-arms them (after the re-render, after the check finished).
     pub fn take_due(&mut self, now: Instant, now_unix: u64) -> Vec<Action> {
         let mut due = Vec::new();
-        if self.poll_at <= now {
+        if self.poll_at_unix <= now_unix {
             due.push(Action::Poll);
-            self.poll_at = now + self.poll_interval;
+            self.poll_at_unix = self.next_poll(now_unix);
         }
         if self.countdown_at.is_some_and(|at| at <= now) {
             due.push(Action::Countdown);
@@ -171,25 +182,23 @@ impl Deadlines {
         due
     }
 
-    /// The machine woke from sleep: poll at once and re-arm the poll for a
-    /// full interval from now. The update check needs nothing here, since
+    /// The machine woke from sleep: poll at once and re-arm the poll at its
+    /// next boundary. The update check needs nothing here, since
     /// [`Self::take_due`] compares its wall-clock deadline with `now_unix`.
-    pub fn resume(&mut self, now: Instant) -> Vec<Action> {
-        self.poll_at = now + self.poll_interval;
+    pub fn resume(&mut self, now_unix: u64) -> Vec<Action> {
+        self.poll_at_unix = self.next_poll(now_unix);
         vec![Action::Poll]
     }
 
     /// Time until the nearest deadline. The poll deadline is always armed,
     /// so there always is one.
     pub fn next_wakeup(&self, now: Instant, now_unix: u64) -> Duration {
-        let update = self
-            .update_at_unix
-            .map(|at| Duration::from_secs(at.saturating_sub(now_unix)));
+        let until = |at: u64| Duration::from_secs(at.saturating_sub(now_unix));
         [
-            Some(self.poll_at.saturating_duration_since(now)),
+            Some(until(self.poll_at_unix)),
             self.countdown_at
                 .map(|at| at.saturating_duration_since(now)),
-            update,
+            self.update_at_unix.map(until),
         ]
         .into_iter()
         .flatten()
@@ -204,7 +213,7 @@ impl Deadlines {
         now_unix: u64,
     ) -> Vec<Action> {
         let interval_secs = interval_secs.map(|secs| secs.max(MIN_UPDATE_INTERVAL.as_secs()));
-        match update_check_due(last_check_unix, interval_secs, now_unix) {
+        match update_check_due(last_check_unix, interval_secs, now_unix, &self.tz) {
             None => {
                 self.update_at_unix = None;
                 Vec::new()
@@ -220,18 +229,24 @@ impl Deadlines {
         }
     }
 
-    /// Delay before the next try after the current run of failures:
-    /// `UPDATE_RETRY_BASE * 2^failures`, capped at the check interval.
-    fn retry_delay(&self, interval_secs: u64) -> Duration {
-        let factor = 1u32.checked_shl(self.update_failures).unwrap_or(u32::MAX);
-        UPDATE_RETRY_BASE
-            .saturating_mul(factor)
-            .min(update_interval(interval_secs))
+    /// The poll boundary after `now_unix`.
+    fn next_poll(&self, now_unix: u64) -> u64 {
+        clock_slot(self.poll_interval.as_secs(), now_unix, &self.tz).1
     }
-}
 
-fn update_interval(secs: u64) -> Duration {
-    Duration::from_secs(secs).max(MIN_UPDATE_INTERVAL)
+    /// The update-check boundary after `now_unix`.
+    fn next_update(&self, interval_secs: u64, now_unix: u64) -> u64 {
+        let interval_secs = interval_secs.max(MIN_UPDATE_INTERVAL.as_secs());
+        clock_slot(interval_secs, now_unix, &self.tz).1
+    }
+
+    /// Delay before the next try after the current run of failures:
+    /// `UPDATE_RETRY_BASE * 2^failures`; the caller caps it at the next
+    /// boundary.
+    fn retry_delay(&self) -> Duration {
+        let factor = 1u32.checked_shl(self.update_failures).unwrap_or(u32::MAX);
+        UPDATE_RETRY_BASE.saturating_mul(factor)
+    }
 }
 
 /// Whether the wall clock ran ahead of `Instant` by more than
@@ -260,7 +275,7 @@ where
     std::thread::Builder::new()
         .name("scheduler".into())
         .spawn(move || {
-            let (deadlines, initial) = Deadlines::new(config, Instant::now(), unix_now());
+            let (deadlines, initial) = Deadlines::new(config, unix_now());
             for action in initial {
                 host.run(action);
             }
@@ -282,7 +297,7 @@ fn run_loop<H: SchedulerHost>(mut deadlines: Deadlines, rx: &Receiver<Message>, 
                 "wall clock moved {wall_elapsed:?} while Instant moved {instant_elapsed:?}; \
                  treating it as a resume from sleep"
             );
-            for action in deadlines.resume(now) {
+            for action in deadlines.resume(unix_now()) {
                 host.run(action);
             }
         }
@@ -308,71 +323,97 @@ mod tests {
     use super::*;
     use std::sync::mpsc::{self, Sender};
 
+    use jiff::tz;
+
     use crate::core::settings::{
         UPDATE_CHECK_DAILY_SECS, UPDATE_CHECK_HOURLY_SECS, UPDATE_CHECK_WEEKLY_SECS,
     };
 
     const MIN: Duration = Duration::from_secs(60);
+    const M: u64 = 60;
+    const HOUR: u64 = 60 * M;
+    const DAY: u64 = 24 * HOUR;
+    /// Friday 2027-01-15 08:00:00 UTC, a whole hour.
     const NOW_UNIX: u64 = 1_800_000_000;
-    const DAY: u64 = 24 * 60 * 60;
+    /// The Monday 00:00 UTC that starts `NOW_UNIX`'s week.
+    const MONDAY: u64 = NOW_UNIX - 4 * DAY - 8 * HOUR;
 
     fn config(update: Option<u64>, last: Option<u64>) -> Config {
         Config {
             poll_interval: 5 * MIN,
             update_interval_secs: update,
             last_update_check_unix: last,
+            tz: TimeZone::UTC,
         }
     }
 
     #[test]
-    fn poll_fires_every_interval() {
+    fn poll_fires_on_interval_boundaries() {
         let t0 = Instant::now();
-        let (mut d, initial) = Deadlines::new(config(None, None), t0, NOW_UNIX);
+        // Started at 08:02:10, a 5-minute poll is next due at 08:05:00.
+        let start = NOW_UNIX + 2 * M + 10;
+        let (mut d, initial) = Deadlines::new(config(None, None), start);
         assert!(initial.is_empty());
-        assert_eq!(d.next_wakeup(t0, NOW_UNIX), 5 * MIN);
-        assert!(d.take_due(t0 + 4 * MIN, NOW_UNIX).is_empty());
-        assert_eq!(d.take_due(t0 + 5 * MIN, NOW_UNIX), [Action::Poll]);
-        assert_eq!(d.next_wakeup(t0 + 5 * MIN, NOW_UNIX), 5 * MIN);
-        assert_eq!(d.take_due(t0 + 10 * MIN, NOW_UNIX), [Action::Poll]);
+        assert_eq!(d.next_wakeup(t0, start), Duration::from_secs(2 * M + 50));
+        assert!(d.take_due(t0, NOW_UNIX + 5 * M - 1).is_empty());
+        assert_eq!(d.take_due(t0, NOW_UNIX + 5 * M), [Action::Poll]);
+        assert_eq!(d.next_wakeup(t0, NOW_UNIX + 5 * M), 5 * MIN);
+        // A late wake-up keeps the boundaries: 08:10:20 re-arms 08:15:00.
+        assert_eq!(d.take_due(t0, NOW_UNIX + 10 * M + 20), [Action::Poll]);
+        assert!(d.take_due(t0, NOW_UNIX + 15 * M - 1).is_empty());
+        assert_eq!(d.take_due(t0, NOW_UNIX + 15 * M), [Action::Poll]);
+    }
+
+    #[test]
+    fn poll_boundaries_follow_the_local_clock() {
+        // At +05:45, 5-minute boundaries fall on the local :00, :05 and so
+        // on, which is UTC :15, :20 and so on.
+        let mut cfg = config(None, None);
+        cfg.tz = TimeZone::fixed(tz::Offset::from_seconds(5 * 3_600 + 45 * 60).unwrap());
+        cfg.poll_interval = 60 * MIN;
+        let (d, _) = Deadlines::new(cfg, NOW_UNIX);
+        assert_eq!(
+            d.next_wakeup(Instant::now(), NOW_UNIX),
+            Duration::from_secs(15 * M)
+        );
     }
 
     #[test]
     fn poll_now_polls_without_moving_the_periodic_deadline() {
         let t0 = Instant::now();
-        let (mut d, _) = Deadlines::new(config(None, None), t0, NOW_UNIX);
+        let (mut d, _) = Deadlines::new(config(None, None), NOW_UNIX);
         assert_eq!(
-            d.handle(Message::PollNow, t0 + 2 * MIN, NOW_UNIX),
+            d.handle(Message::PollNow, t0, NOW_UNIX + 2 * M),
             [Action::Poll]
         );
-        assert_eq!(d.take_due(t0 + 5 * MIN, NOW_UNIX), [Action::Poll]);
+        assert_eq!(d.take_due(t0, NOW_UNIX + 5 * M), [Action::Poll]);
     }
 
     #[test]
-    fn new_poll_interval_rearms_from_now_without_polling() {
+    fn new_poll_interval_rearms_at_its_next_boundary_without_polling() {
         let t0 = Instant::now();
-        let (mut d, _) = Deadlines::new(config(None, None), t0, NOW_UNIX);
-        let t1 = t0 + 4 * MIN;
+        let (mut d, _) = Deadlines::new(config(None, None), NOW_UNIX);
+        let t1 = NOW_UNIX + 4 * M;
         assert!(d
-            .handle(Message::SetPollInterval(MIN * 15), t1, NOW_UNIX)
+            .handle(Message::SetPollInterval(MIN * 15), t0, t1)
             .is_empty());
-        assert!(d.take_due(t0 + 5 * MIN, NOW_UNIX).is_empty());
-        assert_eq!(d.next_wakeup(t1, NOW_UNIX), 15 * MIN);
-        assert_eq!(d.take_due(t1 + 15 * MIN, NOW_UNIX), [Action::Poll]);
+        assert!(d.take_due(t0, NOW_UNIX + 5 * M).is_empty());
+        assert_eq!(d.next_wakeup(t0, t1), 11 * MIN);
+        assert_eq!(d.take_due(t0, NOW_UNIX + 15 * M), [Action::Poll]);
     }
 
     #[test]
     fn a_zero_poll_interval_is_floored() {
-        let t0 = Instant::now();
         let mut cfg = config(None, None);
         cfg.poll_interval = Duration::ZERO;
-        let (d, _) = Deadlines::new(cfg, t0, NOW_UNIX);
-        assert_eq!(d.next_wakeup(t0, NOW_UNIX), MIN_POLL_INTERVAL);
+        let (d, _) = Deadlines::new(cfg, NOW_UNIX);
+        assert_eq!(d.next_wakeup(Instant::now(), NOW_UNIX), MIN_POLL_INTERVAL);
     }
 
     #[test]
     fn countdown_fires_once_until_rearmed() {
         let t0 = Instant::now();
-        let (mut d, _) = Deadlines::new(config(None, None), t0, NOW_UNIX);
+        let (mut d, _) = Deadlines::new(config(None, None), NOW_UNIX);
         let delay = Duration::from_secs(31);
         d.handle(Message::RecomputeCountdown(Some(delay)), t0, NOW_UNIX);
         assert_eq!(d.next_wakeup(t0, NOW_UNIX), delay);
@@ -384,42 +425,10 @@ mod tests {
         assert!(d.take_due(t0 + 2 * delay, NOW_UNIX).is_empty());
     }
 
-    #[test]
-    fn startup_checks_for_updates_when_due() {
-        let t0 = Instant::now();
-        let hourly = Some(UPDATE_CHECK_HOURLY_SECS);
-        let (_, never_checked) = Deadlines::new(config(hourly, None), t0, NOW_UNIX);
-        assert_eq!(never_checked, [Action::CheckForUpdates]);
-        let (_, stale) = Deadlines::new(config(hourly, Some(NOW_UNIX - 2 * 3_600)), t0, NOW_UNIX);
-        assert_eq!(stale, [Action::CheckForUpdates]);
-        let (_, disabled) = Deadlines::new(config(None, None), t0, NOW_UNIX);
-        assert!(disabled.is_empty());
-    }
-
-    #[test]
-    fn startup_waits_for_the_remainder_when_not_due() {
-        let t0 = Instant::now();
-        let (mut d, initial) = Deadlines::new(
-            config(Some(UPDATE_CHECK_HOURLY_SECS), Some(NOW_UNIX - 600)),
-            t0,
-            NOW_UNIX,
-        );
-        assert!(initial.is_empty());
-        let remaining = 3_000;
-        assert!(!d
-            .take_due(t0, NOW_UNIX + remaining - 60)
-            .contains(&Action::CheckForUpdates));
-        assert_eq!(d.next_wakeup(t0, NOW_UNIX + remaining - 60), MIN);
-        assert_eq!(
-            d.take_due(t0, NOW_UNIX + remaining),
-            [Action::CheckForUpdates]
-        );
-    }
-
-    /// Whether a check is due at `now_unix`, with `Instant` left at `t0`
-    /// to show the update deadline follows the wall clock alone.
-    fn check_due(d: &mut Deadlines, t0: Instant, now_unix: u64) -> bool {
-        d.take_due(t0, now_unix).contains(&Action::CheckForUpdates)
+    /// Whether a check is due at `now_unix`.
+    fn check_due(d: &mut Deadlines, now_unix: u64) -> bool {
+        d.take_due(Instant::now(), now_unix)
+            .contains(&Action::CheckForUpdates)
     }
 
     fn done(interval_secs: Option<u64>, succeeded: bool) -> Message {
@@ -430,76 +439,118 @@ mod tests {
     }
 
     #[test]
-    fn only_a_finished_check_rearms_the_full_interval() {
-        let t0 = Instant::now();
-        let hour = UPDATE_CHECK_HOURLY_SECS;
-        let (mut d, initial) = Deadlines::new(config(Some(hour), None), t0, NOW_UNIX);
-        assert_eq!(initial, [Action::CheckForUpdates]);
-        // While the check runs nothing else is scheduled for it.
-        assert!(!check_due(&mut d, t0, NOW_UNIX + 3 * hour));
-
-        let t1 = NOW_UNIX + 3 * hour;
-        d.handle(done(Some(hour), true), t0, t1);
-        assert!(!check_due(&mut d, t0, t1 + hour / 2));
-        assert!(check_due(&mut d, t0, t1 + hour));
-        // It repeats every interval, not just once.
-        let t2 = t1 + hour;
-        d.handle(done(Some(hour), true), t0, t2);
-        assert!(check_due(&mut d, t0, t2 + hour));
+    fn startup_checks_only_when_a_boundary_passed_since_the_last_check() {
+        let hourly = Some(UPDATE_CHECK_HOURLY_SECS);
+        let (_, never_checked) = Deadlines::new(config(hourly, None), NOW_UNIX + M);
+        assert_eq!(never_checked, [Action::CheckForUpdates]);
+        // Checked at 07:59:59, started at 08:01: 08:00 passed in between.
+        let (_, passed) = Deadlines::new(config(hourly, Some(NOW_UNIX - 1)), NOW_UNIX + M);
+        assert_eq!(passed, [Action::CheckForUpdates]);
+        // Checked at 08:00:30, started at 08:59: no boundary yet, so it
+        // waits for 09:00.
+        let (mut d, waiting) =
+            Deadlines::new(config(hourly, Some(NOW_UNIX + 30)), NOW_UNIX + 59 * M);
+        assert!(waiting.is_empty());
+        assert!(!check_due(&mut d, NOW_UNIX + HOUR - 1));
+        assert!(check_due(&mut d, NOW_UNIX + HOUR));
+        let (_, disabled) = Deadlines::new(config(None, None), NOW_UNIX);
+        assert!(disabled.is_empty());
     }
 
     #[test]
-    fn a_failed_check_retries_with_a_doubling_delay_capped_at_the_interval() {
-        let t0 = Instant::now();
+    fn daily_and_weekly_checks_fall_on_local_midnight() {
+        let daily = Some(UPDATE_CHECK_DAILY_SECS);
+        let midnight = NOW_UNIX - 8 * HOUR;
+        let (_, before) = Deadlines::new(config(daily, Some(midnight - 1)), NOW_UNIX);
+        assert_eq!(before, [Action::CheckForUpdates]);
+        let (mut d, after) = Deadlines::new(config(daily, Some(midnight)), NOW_UNIX);
+        assert!(after.is_empty());
+        assert!(!check_due(&mut d, midnight + DAY - 1));
+        assert!(check_due(&mut d, midnight + DAY));
+
+        let weekly = Some(UPDATE_CHECK_WEEKLY_SECS);
+        let (mut d, initial) = Deadlines::new(config(weekly, Some(MONDAY + 1)), NOW_UNIX);
+        assert!(initial.is_empty());
+        assert!(!check_due(&mut d, MONDAY + 7 * DAY - 1));
+        assert!(check_due(&mut d, MONDAY + 7 * DAY));
+
+        // At UTC+07:00 local midnight is 17:00 UTC the day before.
+        let mut cfg = config(daily, Some(NOW_UNIX));
+        cfg.tz = TimeZone::fixed(tz::offset(7));
+        let (mut d, _) = Deadlines::new(cfg, NOW_UNIX);
+        assert!(!check_due(&mut d, NOW_UNIX + 9 * HOUR - 1));
+        assert!(check_due(&mut d, NOW_UNIX + 9 * HOUR));
+    }
+
+    #[test]
+    fn a_finished_check_rearms_at_the_next_boundary() {
         let hour = UPDATE_CHECK_HOURLY_SECS;
-        let (mut d, _) = Deadlines::new(config(Some(hour), None), t0, NOW_UNIX);
+        let (mut d, initial) = Deadlines::new(config(Some(hour), None), NOW_UNIX);
+        assert_eq!(initial, [Action::CheckForUpdates]);
+        // While the check runs nothing else is scheduled for it.
+        assert!(!check_due(&mut d, NOW_UNIX + 3 * hour));
+
+        let t1 = NOW_UNIX + 3 * hour + 20 * M;
+        d.handle(done(Some(hour), true), Instant::now(), t1);
+        assert!(!check_due(&mut d, NOW_UNIX + 4 * hour - 1));
+        assert!(check_due(&mut d, NOW_UNIX + 4 * hour));
+        // It repeats every boundary, not just once.
+        d.handle(done(Some(hour), true), Instant::now(), NOW_UNIX + 4 * hour);
+        assert!(check_due(&mut d, NOW_UNIX + 5 * hour));
+    }
+
+    #[test]
+    fn a_failed_check_retries_with_a_doubling_delay_capped_at_the_next_boundary() {
+        let day = UPDATE_CHECK_DAILY_SECS;
+        let (mut d, _) = Deadlines::new(config(Some(day), None), NOW_UNIX);
         let mut now = NOW_UNIX;
-        for expected in [60, 120, 240, 480, 960, 1_920, hour, hour] {
-            d.handle(done(Some(hour), false), t0, now);
-            assert!(!check_due(&mut d, t0, now + expected - 1));
-            assert!(check_due(&mut d, t0, now + expected));
+        for expected in [60, 120, 240, 480, 960, 1_920, 3_840] {
+            d.handle(done(Some(day), false), Instant::now(), now);
+            assert!(!check_due(&mut d, now + expected - 1));
+            assert!(check_due(&mut d, now + expected));
             now += expected;
         }
+        // The next delay would pass midnight, so it retries at midnight.
+        let midnight = NOW_UNIX - 8 * HOUR + DAY;
+        now = midnight - 10 * M;
+        d.handle(done(Some(day), false), Instant::now(), now);
+        assert!(check_due(&mut d, midnight));
         // A success resets the delay: the next failure retries after a minute.
-        d.handle(done(Some(hour), true), t0, now);
-        assert!(check_due(&mut d, t0, now + hour));
-        now += hour;
-        d.handle(done(Some(hour), false), t0, now);
-        assert!(check_due(&mut d, t0, now + 60));
+        d.handle(done(Some(day), true), Instant::now(), midnight);
+        d.handle(done(Some(day), false), Instant::now(), midnight + HOUR);
+        assert!(check_due(&mut d, midnight + HOUR + 60));
     }
 
     #[test]
     fn a_failed_check_with_auto_check_off_stays_off() {
-        let t0 = Instant::now();
-        let (mut d, _) = Deadlines::new(config(None, None), t0, NOW_UNIX);
-        d.handle(done(None, false), t0, NOW_UNIX);
-        assert!(!check_due(&mut d, t0, NOW_UNIX + 7 * DAY));
+        let (mut d, _) = Deadlines::new(config(None, None), NOW_UNIX);
+        d.handle(done(None, false), Instant::now(), NOW_UNIX);
+        assert!(!check_due(&mut d, NOW_UNIX + 7 * DAY));
     }
 
     #[test]
-    fn the_update_deadline_follows_the_wall_clock_across_a_sleep() {
+    fn the_wall_clock_deadlines_survive_a_sleep() {
         // `Instant` does not advance while the machine sleeps, but the
-        // check is still due once the wall clock passes its time.
+        // deadlines are due once the wall clock passes them.
         let t0 = Instant::now();
         let day = UPDATE_CHECK_DAILY_SECS;
-        let (mut d, _) = Deadlines::new(config(Some(day), Some(NOW_UNIX)), t0, NOW_UNIX);
-        assert!(!check_due(&mut d, t0, NOW_UNIX + day - 1));
-        assert!(check_due(
-            &mut d,
-            t0 + Duration::from_secs(1),
-            NOW_UNIX + day
-        ));
+        let (mut d, _) = Deadlines::new(config(Some(day), Some(NOW_UNIX)), NOW_UNIX);
+        let midnight = NOW_UNIX - 8 * HOUR + DAY;
+        assert!(!d
+            .take_due(t0, midnight - 1)
+            .contains(&Action::CheckForUpdates));
+        assert!(d.take_due(t0, midnight).contains(&Action::CheckForUpdates));
     }
 
     #[test]
-    fn resume_polls_at_once_and_rearms_the_poll() {
+    fn resume_polls_at_once_and_rearms_the_poll_at_its_boundary() {
         let t0 = Instant::now();
-        let (mut d, _) = Deadlines::new(config(None, None), t0, NOW_UNIX);
-        let t1 = t0 + 2 * MIN;
-        assert_eq!(d.resume(t1), [Action::Poll]);
-        assert!(d.take_due(t0 + 5 * MIN, NOW_UNIX).is_empty());
-        assert_eq!(d.next_wakeup(t1, NOW_UNIX), 5 * MIN);
-        assert_eq!(d.take_due(t1 + 5 * MIN, NOW_UNIX), [Action::Poll]);
+        let (mut d, _) = Deadlines::new(config(None, None), NOW_UNIX);
+        let woke = NOW_UNIX + 7 * HOUR + 2 * M;
+        assert_eq!(d.resume(woke), [Action::Poll]);
+        assert!(d.take_due(t0, woke).is_empty());
+        assert_eq!(d.next_wakeup(t0, woke), 3 * MIN);
+        assert_eq!(d.take_due(t0, woke + 3 * M), [Action::Poll]);
     }
 
     #[test]
@@ -520,11 +571,10 @@ mod tests {
     }
 
     #[test]
-    fn weekly_to_daily_with_the_last_check_two_days_ago_checks_at_once() {
-        let t0 = Instant::now();
+    fn weekly_to_daily_checks_at_once_when_midnight_passed_since_the_last_check() {
         let last = Some(NOW_UNIX - 2 * DAY);
         let (mut d, initial) =
-            Deadlines::new(config(Some(UPDATE_CHECK_WEEKLY_SECS), last), t0, NOW_UNIX);
+            Deadlines::new(config(Some(UPDATE_CHECK_WEEKLY_SECS), last), NOW_UNIX);
         assert!(initial.is_empty());
         assert_eq!(
             d.handle(
@@ -532,7 +582,7 @@ mod tests {
                     interval_secs: Some(UPDATE_CHECK_DAILY_SECS),
                     last_check_unix: last,
                 },
-                t0,
+                Instant::now(),
                 NOW_UNIX,
             ),
             [Action::CheckForUpdates]
@@ -540,44 +590,40 @@ mod tests {
     }
 
     #[test]
-    fn daily_to_weekly_waits_for_the_new_remainder() {
-        let t0 = Instant::now();
+    fn daily_to_weekly_waits_for_monday() {
         let last = Some(NOW_UNIX - 2 * DAY);
-        let (mut d, _) = Deadlines::new(config(Some(UPDATE_CHECK_HOURLY_SECS), last), t0, NOW_UNIX);
+        let (mut d, _) = Deadlines::new(config(Some(UPDATE_CHECK_HOURLY_SECS), last), NOW_UNIX);
         let actions = d.handle(
             Message::SetUpdateInterval {
                 interval_secs: Some(UPDATE_CHECK_WEEKLY_SECS),
                 last_check_unix: last,
             },
-            t0,
+            Instant::now(),
             NOW_UNIX,
         );
         assert!(actions.is_empty());
-        let remaining = 5 * DAY;
-        assert!(!check_due(&mut d, t0, NOW_UNIX + remaining - 60));
-        assert!(check_due(&mut d, t0, NOW_UNIX + remaining));
+        assert!(!check_due(&mut d, MONDAY + 7 * DAY - 1));
+        assert!(check_due(&mut d, MONDAY + 7 * DAY));
     }
 
     #[test]
     fn disabling_auto_check_cancels_the_deadline() {
-        let t0 = Instant::now();
         let (mut d, _) = Deadlines::new(
-            config(Some(UPDATE_CHECK_HOURLY_SECS), Some(NOW_UNIX - 600)),
-            t0,
-            NOW_UNIX,
+            config(Some(UPDATE_CHECK_HOURLY_SECS), Some(NOW_UNIX + 60)),
+            NOW_UNIX + 600,
         );
         d.handle(
             Message::SetUpdateInterval {
                 interval_secs: None,
-                last_check_unix: Some(NOW_UNIX - 600),
+                last_check_unix: Some(NOW_UNIX + 60),
             },
-            t0,
-            NOW_UNIX,
+            Instant::now(),
+            NOW_UNIX + 600,
         );
-        assert!(!check_due(&mut d, t0, NOW_UNIX + 7 * DAY));
+        assert!(!check_due(&mut d, NOW_UNIX + 7 * DAY));
         // A check that finishes after auto-check was turned off stays off.
-        d.handle(done(None, true), t0, NOW_UNIX);
-        assert!(!check_due(&mut d, t0, NOW_UNIX + 14 * DAY));
+        d.handle(done(None, true), Instant::now(), NOW_UNIX);
+        assert!(!check_due(&mut d, NOW_UNIX + 14 * DAY));
     }
 
     /// Records actions on a channel, standing in for the runtime.

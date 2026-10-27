@@ -8,7 +8,11 @@
 use std::collections::HashMap;
 use std::time::{Duration, Instant, SystemTime};
 
+use jiff::tz::TimeZone;
+use jiff::{Timestamp, ToSpan, Zoned};
+
 use crate::core::i18n::{self, LocaleStrings};
+use crate::core::settings;
 use crate::usage::{ProviderId, UsageWindows, Window};
 
 /// Minimum gap between two cooldown-gated alerts (threshold and session
@@ -291,25 +295,76 @@ pub enum UpdateCheckDue {
 }
 
 /// Schedule the automatic update check from the last check time (unix
-/// seconds). `None` when auto-check is disabled. Due when never checked or
-/// when `now - last >= interval`; otherwise after the remainder.
+/// seconds). `None` when auto-check is disabled. Checks fall on local
+/// clock boundaries: hourly at the top of each hour, daily at midnight,
+/// weekly at midnight on Monday. Due when never checked or when the last
+/// check came before the boundary that most recently passed; otherwise
+/// after the time left until the next boundary.
 pub fn update_check_due(
     last_check_unix: Option<u64>,
     interval_secs: Option<u64>,
     now_unix: u64,
+    tz: &TimeZone,
 ) -> Option<UpdateCheckDue> {
     let interval = interval_secs?;
-    let Some(last) = last_check_unix else {
-        return Some(UpdateCheckDue::Now);
-    };
-    let elapsed = now_unix.saturating_sub(last);
-    if elapsed >= interval {
-        Some(UpdateCheckDue::Now)
-    } else {
-        Some(UpdateCheckDue::After(Duration::from_secs(
-            interval - elapsed,
-        )))
+    let (start, next) = clock_slot(interval, now_unix, tz);
+    // A last check after `now` (a clock set back) counts as this slot's.
+    match last_check_unix {
+        Some(last) if last >= start => Some(UpdateCheckDue::After(Duration::from_secs(
+            next.saturating_sub(now_unix),
+        ))),
+        _ => Some(UpdateCheckDue::Now),
     }
+}
+
+/// The slot of a clock-aligned timer that holds `now_unix`: the boundary
+/// that most recently passed and the next one, in unix seconds. An hour,
+/// a day and a week follow the local calendar (top of the hour, midnight,
+/// Monday midnight), across daylight-saving changes too. Any other interval
+/// splits the local day evenly, so 5 minutes falls on :00, :05, :10 and
+/// so on.
+pub fn clock_slot(interval_secs: u64, now_unix: u64, tz: &TimeZone) -> (u64, u64) {
+    let calendar = || -> Result<(Zoned, Zoned), jiff::Error> {
+        let now = Timestamp::from_second(i64::try_from(now_unix).unwrap_or(i64::MAX))?
+            .to_zoned(tz.clone());
+        let (start, step) = match interval_secs {
+            settings::UPDATE_CHECK_HOURLY_SECS => (
+                now.with()
+                    .minute(0)
+                    .second(0)
+                    .subsec_nanosecond(0)
+                    .build()?,
+                1.hour(),
+            ),
+            settings::UPDATE_CHECK_DAILY_SECS => (now.start_of_day()?, 1.day()),
+            settings::UPDATE_CHECK_WEEKLY_SECS => {
+                let days = now.weekday().to_monday_zero_offset();
+                let monday = now.start_of_day()?.checked_sub(i64::from(days).days())?;
+                (monday.start_of_day()?, 1.week())
+            }
+            _ => return Err(jiff::Error::from_args(format_args!("no calendar slot"))),
+        };
+        let next = start.checked_add(step)?;
+        Ok((start, next))
+    };
+    match calendar() {
+        Ok((start, next)) => (unix_secs(&start), unix_secs(&next)),
+        Err(_) => {
+            let interval = i64::try_from(interval_secs.max(1)).unwrap_or(i64::MAX);
+            let now = i64::try_from(now_unix).unwrap_or(i64::MAX);
+            let offset = Timestamp::from_second(now)
+                .map(|t| i64::from(tz.to_offset(t).seconds()))
+                .unwrap_or(0);
+            let local = now.saturating_add(offset);
+            let start = local - local.rem_euclid(interval) - offset;
+            let start = u64::try_from(start).unwrap_or(0);
+            (start, start.saturating_add(interval.unsigned_abs()))
+        }
+    }
+}
+
+fn unix_secs(zoned: &Zoned) -> u64 {
+    u64::try_from(zoned.timestamp().as_second()).unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -620,26 +675,59 @@ mod tests {
 
     #[test]
     fn update_schedule_due_and_remaining() {
-        let hour = 3_600;
-        assert_eq!(update_check_due(None, None, 10_000), None);
-        assert_eq!(update_check_due(Some(9_000), None, 10_000), None);
+        let utc = TimeZone::UTC;
+        let hour = settings::UPDATE_CHECK_HOURLY_SECS;
+        // 10_000 s is 02:46:40 UTC; the hour started at 7_200.
+        assert_eq!(update_check_due(None, None, 10_000, &utc), None);
+        assert_eq!(update_check_due(Some(9_000), None, 10_000, &utc), None);
         assert_eq!(
-            update_check_due(None, Some(hour), 10_000),
+            update_check_due(None, Some(hour), 10_000, &utc),
             Some(UpdateCheckDue::Now)
         );
         assert_eq!(
-            update_check_due(Some(10_000 - hour), Some(hour), 10_000),
+            update_check_due(Some(7_199), Some(hour), 10_000, &utc),
             Some(UpdateCheckDue::Now)
         );
         assert_eq!(
-            update_check_due(Some(10_000 - 600), Some(hour), 10_000),
-            Some(UpdateCheckDue::After(Duration::from_secs(3_000)))
+            update_check_due(Some(7_200), Some(hour), 10_000, &utc),
+            Some(UpdateCheckDue::After(Duration::from_secs(800)))
         );
-        // A clock that moved backwards counts as zero elapsed.
+        // A clock that moved backwards counts as checked this slot.
         assert_eq!(
-            update_check_due(Some(20_000), Some(hour), 10_000),
-            Some(UpdateCheckDue::After(Duration::from_secs(hour)))
+            update_check_due(Some(20_000), Some(hour), 10_000, &utc),
+            Some(UpdateCheckDue::After(Duration::from_secs(800)))
         );
+    }
+
+    #[test]
+    fn clock_slots_follow_the_local_calendar() {
+        let utc = TimeZone::UTC;
+        // 5 minutes: 02:46:40 sits in 02:45..02:50.
+        assert_eq!(clock_slot(300, 10_000, &utc), (9_900, 10_200));
+        // At +05:30 local hours start at UTC :30.
+        let india = TimeZone::fixed(jiff::tz::Offset::from_seconds(5 * 3_600 + 30 * 60).unwrap());
+        assert_eq!(
+            clock_slot(settings::UPDATE_CHECK_HOURLY_SECS, 10_000, &india),
+            (9_000, 12_600)
+        );
+        // 1970-01-01 was a Thursday: its week started Monday 1969-12-29,
+        // before the epoch, so the slot start clamps to 0.
+        assert_eq!(
+            clock_slot(settings::UPDATE_CHECK_WEEKLY_SECS, 10_000, &utc),
+            (0, 4 * 86_400)
+        );
+    }
+
+    #[test]
+    fn a_daily_slot_spans_a_short_daylight_saving_day() {
+        let Ok(berlin) = TimeZone::get("Europe/Berlin") else {
+            return; // no tz database on this machine
+        };
+        // 2026-03-29 is 23 hours long in Berlin; it starts at 23:00 UTC.
+        let noon = 1_774_785_600; // 2026-03-29 12:00 UTC
+        let (start, next) = clock_slot(settings::UPDATE_CHECK_DAILY_SECS, noon, &berlin);
+        assert_eq!(start, 1_774_738_800);
+        assert_eq!(next - start, 23 * 3_600);
     }
 
     #[test]
