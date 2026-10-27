@@ -10,6 +10,7 @@ import {
   cssPx,
   headLabelText,
   headMetrics,
+  outlinePath,
   pulseActive,
   pulseT,
   remainingFraction,
@@ -153,6 +154,18 @@ describe('tailLayout', () => {
     const exact = tailLayout({ canvasW: 360, canvasH: 138, dpi: 96 }, () => 40);
     const fractional = tailLayout({ canvasW: 360, canvasH: 138, dpi: 96 }, () => 39.2);
     assert.deepEqual(fractional, exact);
+  });
+});
+
+describe('outlinePath', () => {
+  it('joins a full-height head to a centred tail with rounded end corners', () => {
+    // h 100: tail 60 tall from y 20 to 80, end corners of radius 12, and the
+    // tail edges meet the head circle at x = 50 + sqrt(50² - 30²) = 90.
+    assert.equal(
+      outlinePath(300, 100),
+      'M 90 20 L 288 20 A 12 12 0 0 1 300 32 L 300 68 A 12 12 0 0 1 288 80 ' +
+        'L 90 80 A 50 50 0 1 1 90 20 Z',
+    );
   });
 });
 

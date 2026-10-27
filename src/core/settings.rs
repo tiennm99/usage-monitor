@@ -119,6 +119,9 @@ pub struct Settings {
     pub update_check_interval_secs: Option<u64>,
     #[serde(default = "default_widget_visible")]
     pub widget_visible: bool,
+    /// The bubbles ignore the mouse, so clicks reach the windows below.
+    #[serde(default)]
+    pub click_through: bool,
 }
 
 impl Default for Settings {
@@ -132,6 +135,7 @@ impl Default for Settings {
             last_update_check_unix: None,
             update_check_interval_secs: default_update_check_interval_secs(),
             widget_visible: default_widget_visible(),
+            click_through: false,
         }
     }
 }
@@ -520,6 +524,7 @@ mod tests {
             [
                 "bubble_positions",
                 "bubble_size_logical",
+                "click_through",
                 "last_update_check_unix",
                 "poll_interval_ms",
                 "show_claude_code",

@@ -8,6 +8,7 @@ import {
   cssPx,
   headLabelText,
   headMetrics,
+  outlinePath,
   pulseActive,
   pulseT,
   remainingFraction,
@@ -217,6 +218,8 @@ function relayout(p) {
   tail = tailLayout(canvas, (text, px, weight) => measure(text, px, weight));
   layoutKey = key;
 
+  const outline = outlinePath(cssPx(p.canvasW, p.dpi), cssPx(p.canvasH, p.dpi));
+  pill.style.clipPath = `path('${outline}')`;
   rings.setAttribute('viewBox', `0 0 ${p.canvasW} ${p.canvasH}`);
   placeCircle(ringTrack, head.ringCx, head.ringCy, head.ringRadius, head.ringStroke);
   placeCircle(ringArc, head.ringCx, head.ringCy, head.ringRadius, head.ringStroke);

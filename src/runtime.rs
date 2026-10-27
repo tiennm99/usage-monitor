@@ -433,6 +433,7 @@ impl Runtime {
             MenuCommand::SizeLarger => self.resize_bubbles(geom::RESIZE_STEP_LOGICAL),
             MenuCommand::SizeReset => self.set_bubble_size(DEFAULT_BUBBLE_SIZE),
             MenuCommand::ToggleWidget => self.toggle_widget(),
+            MenuCommand::ToggleClickThrough => self.toggle_click_through(),
             MenuCommand::Restart => self.restart(),
             MenuCommand::Exit => self.exit(),
         }
@@ -494,6 +495,15 @@ impl Runtime {
             visibility::Event::UserHide
         };
         self.apply_visibility(event);
+    }
+
+    /// Flip whether the bubbles let the mouse through, and remember it.
+    fn toggle_click_through(&self) {
+        let ignore = self.update_settings(|s| {
+            s.click_through = !s.click_through;
+            s.click_through
+        });
+        bubble::set_click_through(&self.ui.app, ignore);
     }
 
     /// Apply a visibility event to every bubble. A user show or hide is

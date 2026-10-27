@@ -316,10 +316,11 @@ pub fn create(app: &AppHandle, provider: ProviderId) -> tauri::Result<()> {
         log::warn!("{label} not created: the runtime is not ready");
         return Ok(());
     };
-    let (size_logical, saved) = runtime.with_state(|s| {
+    let (size_logical, saved, click_through) = runtime.with_state(|s| {
         (
             s.settings.bubble_size_logical,
             s.settings.bubble_positions.get(provider),
+            s.settings.click_through,
         )
     });
     let all = screens(app);
@@ -350,6 +351,9 @@ pub fn create(app: &AppHandle, provider: ProviderId) -> tauri::Result<()> {
         set_position(&window, placement.pos);
     }
     set_size(&window, placement.size);
+    if click_through {
+        set_ignore_cursor(&window, true);
+    }
     log::info!(
         "{label} created at ({}, {}) size {}x{} dpi {}",
         placement.pos.x,
@@ -482,6 +486,25 @@ pub fn apply(app: &AppHandle, action: Action) {
     });
     if let Err(err) = queued {
         log::warn!("bubble visibility could not reach the main thread: {err}");
+    }
+}
+
+/// Make every bubble ignore the mouse, or take it again.
+pub fn set_click_through(app: &AppHandle, ignore: bool) {
+    let handle = app.clone();
+    let queued = app.run_on_main_thread(move || {
+        for (_, window) in windows(&handle) {
+            set_ignore_cursor(&window, ignore);
+        }
+    });
+    if let Err(err) = queued {
+        log::warn!("bubble click-through could not reach the main thread: {err}");
+    }
+}
+
+fn set_ignore_cursor(window: &WebviewWindow, ignore: bool) {
+    if let Err(err) = window.set_ignore_cursor_events(ignore) {
+        log::warn!("{} click-through not set: {err}", window.label());
     }
 }
 

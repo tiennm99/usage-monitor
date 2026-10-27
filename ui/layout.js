@@ -30,6 +30,12 @@ const WHEEL_MODE_PX = [1, 16, 800];
 /** Usage at or above this percent pulses. */
 export const PULSE_THRESHOLD_PCT = 95;
 
+/** Tail height as a share of the head diameter. */
+export const TAIL_HEIGHT_RATIO = 0.6;
+
+/** Tail end corner radius as a share of the tail height. */
+const TAIL_CORNER_RATIO = 0.2;
+
 /** Pulse period in ticks and the share of the way to white at the peak. */
 const PULSE_PERIOD = 24;
 const PULSE_STRENGTH = 0.3;
@@ -193,6 +199,35 @@ export function headMetrics(canvas) {
     pctRect: { l: inset, t: top + labelH + gap, r: headD - inset, b: top + total },
     fonts,
   };
+}
+
+/**
+ * Outline of the bubble: a round head the full height of the window, with a
+ * narrower, vertically centred tail running to the right edge. The tail's
+ * end has small rounded corners. Units are whatever `w` and `h` are in.
+ * @param {number} w Window width.
+ * @param {number} h Window height, which is also the head diameter.
+ * @returns {string} SVG path data for CSS `clip-path: path(...)`.
+ */
+export function outlinePath(w, h) {
+  const r = h / 2;
+  const tailH = h * TAIL_HEIGHT_RATIO;
+  const top = (h - tailH) / 2;
+  const bottom = top + tailH;
+  const corner = tailH * TAIL_CORNER_RATIO;
+  // Where the tail's top and bottom edges meet the head circle.
+  const joinX = r + Math.sqrt(r * r - (r - top) ** 2);
+  const n = (/** @type {number} */ v) => Number(v.toFixed(2));
+  return [
+    `M ${n(joinX)} ${n(top)}`,
+    `L ${n(w - corner)} ${n(top)}`,
+    `A ${n(corner)} ${n(corner)} 0 0 1 ${n(w)} ${n(top + corner)}`,
+    `L ${n(w)} ${n(bottom - corner)}`,
+    `A ${n(corner)} ${n(corner)} 0 0 1 ${n(w - corner)} ${n(bottom)}`,
+    `L ${n(joinX)} ${n(bottom)}`,
+    `A ${n(r)} ${n(r)} 0 1 1 ${n(joinX)} ${n(top)}`,
+    'Z',
+  ].join(' ');
 }
 
 /**

@@ -27,8 +27,9 @@ self-updater are all written from scratch against the same public APIs
 
 ## What you get
 
-- A circular floating bubble showing your current 5-hour Claude Code or
-  Codex usage as a percentage and a colored progress ring
+- A see-through floating bubble: a round head showing your current 5-hour
+  Claude Code or Codex usage as a percentage and a colored progress ring,
+  with a slimmer tail holding the 7-day usage and reset bars
 - Drag anywhere — the bubble snaps to monitor work-area edges when
   released
 - Resize with `Ctrl + MouseWheel` on the bubble, or use **Controls** →
@@ -37,7 +38,8 @@ self-updater are all written from scratch against the same public APIs
 - Left-click the bubble for an expanded panel with both **5h** and **7d**
   bars plus reset countdowns
 - Right-click for refresh, displayed providers, update frequency, startup,
-  **Reset position**, updates, **Show widget**, **Restart** and **Exit**
+  **Reset position**, updates, **Show widget**, **Click-through**,
+  **Restart** and **Exit**
 - A system tray icon per enabled provider, with a usage badge
 - Desktop notifications when usage crosses a threshold, when a sign-in
   expires and after an update was applied
@@ -166,7 +168,8 @@ to the nearest edge if you let go close to one.
 
 - **Left-click** the bubble to open the expanded panel (5h + 7d + countdowns)
 - **Right-click** for **Refresh**, **Update frequency**, **Providers**,
-  **Settings**, **Controls**, **Show widget**, **Restart** and **Exit**.
+  **Settings**, **Controls**, **Show widget**, **Click-through**,
+  **Restart** and **Exit**.
   **Settings** holds "Start with Windows" ("Start at login" on Linux),
   **Reset position**, a manual **Check for updates** and the
   **Auto-update check** interval (Disabled / Hourly / Daily / Weekly)
@@ -175,6 +178,9 @@ to the nearest edge if you let go close to one.
   menu, to resize it
 - **Tray icon:** left-click toggles the bubble visibility, right-click opens
   the same menu (on Linux, any click opens the menu)
+- **Click-through:** when checked, the bubbles ignore the mouse, so clicks
+  reach the windows underneath. You can't drag, resize or right-click a
+  bubble then; uncheck it from the tray icon's menu
 
 ### Providers
 
@@ -268,6 +274,7 @@ What the app stores locally:
 - Bubble position(s) per model
 - Bubble size
 - Whether the bubbles are shown (**Show widget**)
+- Whether the bubbles let clicks through (**Click-through**)
 - Polling frequency
 - Auto-update check interval
 - Last update check time

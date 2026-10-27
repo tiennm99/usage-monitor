@@ -23,6 +23,7 @@ pub enum MenuCommand {
     SizeLarger,
     SizeReset,
     ToggleWidget,
+    ToggleClickThrough,
     Restart,
     Exit,
 }
@@ -31,7 +32,7 @@ impl MenuCommand {
     /// The item id: `refresh`, `freq:<ms>`, `provider:<slug>`, `autostart`,
     /// `reset-position`, `version`, `update-interval:<secs|off>`,
     /// `size-smaller`, `size-larger`, `size-reset`, `toggle-widget`,
-    /// `restart` or `exit`.
+    /// `click-through`, `restart` or `exit`.
     pub fn id(self) -> String {
         match self {
             MenuCommand::Refresh => "refresh".into(),
@@ -46,6 +47,7 @@ impl MenuCommand {
             MenuCommand::SizeLarger => "size-larger".into(),
             MenuCommand::SizeReset => "size-reset".into(),
             MenuCommand::ToggleWidget => "toggle-widget".into(),
+            MenuCommand::ToggleClickThrough => "click-through".into(),
             MenuCommand::Restart => "restart".into(),
             MenuCommand::Exit => "exit".into(),
         }
@@ -64,6 +66,7 @@ impl MenuCommand {
             "size-larger" => Some(MenuCommand::SizeLarger),
             "size-reset" => Some(MenuCommand::SizeReset),
             "toggle-widget" => Some(MenuCommand::ToggleWidget),
+            "click-through" => Some(MenuCommand::ToggleClickThrough),
             "restart" => Some(MenuCommand::Restart),
             "exit" => Some(MenuCommand::Exit),
             _ => None,
@@ -282,6 +285,12 @@ pub fn build(input: MenuInput<'_>) -> Vec<MenuEntry> {
             settings.widget_visible,
             true,
         ),
+        check(
+            MenuCommand::ToggleClickThrough,
+            &s.click_through,
+            settings.click_through,
+            true,
+        ),
         MenuEntry::Separator,
         action(MenuCommand::Restart, &s.restart, true),
         action(MenuCommand::Exit, &s.exit, true),
@@ -361,6 +370,7 @@ mod tests {
             update_check_interval_secs: Some(UPDATE_CHECK_DAILY_SECS),
             show_codex: true,
             widget_visible: false,
+            click_through: true,
             ..Settings::default()
         };
         let m = menu(&settings, UpdateStatus::Idle);
@@ -372,6 +382,7 @@ mod tests {
         assert!(checked(&m, "provider:chatgpt"));
         assert!(checked(&m, "autostart"));
         assert!(!checked(&m, "toggle-widget"));
+        assert!(checked(&m, "click-through"));
     }
 
     #[test]
@@ -436,6 +447,7 @@ mod tests {
                 "Settings",
                 "Controls",
                 "Show widget",
+                "Click-through",
                 "-",
                 "Restart",
                 "Exit"
@@ -538,12 +550,13 @@ mod tests {
         let got: Vec<&str> = lines.iter().map(String::as_str).collect();
         assert_eq!(got[..expected.len()], expected);
         let tail: Vec<&str> = got[expected.len()..].to_vec();
-        assert_eq!(tail.len(), 9);
+        assert_eq!(tail.len(), 10);
         assert!(tail[..5].iter().all(|l| l.ends_with(" hint")), "{tail:?}");
         assert_eq!(
             tail[5..],
             [
                 "Show widget [toggle-widget] on",
+                "Click-through [click-through] off",
                 "-",
                 "Restart [restart]",
                 "Exit [exit]"
@@ -567,7 +580,7 @@ mod tests {
         }
         let mut commands = Vec::new();
         walk(&m, &mut commands);
-        assert_eq!(commands.len(), 20);
+        assert_eq!(commands.len(), 21);
         for c in commands {
             assert_eq!(MenuCommand::parse(&c.id()), Some(c), "{}", c.id());
         }
