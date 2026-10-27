@@ -59,6 +59,8 @@ const FONT_STACK = '"Segoe UI", system-ui, sans-serif';
 /** Weight text is measured at when the caller names none (regular). */
 const MEASURE_WEIGHT = 400;
 const HEAD_LABEL_WEIGHT = 600;
+/** Outline stroke in CSS px; the clip keeps the inner half. */
+const EDGE_STROKE = 2;
 
 const slug = windowLabel.replace(/^bubble-/, '');
 
@@ -80,6 +82,8 @@ function byId(id) {
 const pill = byId('pill');
 /** @type {SVGSVGElement} */
 const rings = byId('rings');
+/** @type {SVGPathElement} */
+const edge = byId('edge');
 /** @type {SVGCircleElement} */
 const ringTrack = byId('ring-track');
 /** @type {SVGCircleElement} */
@@ -221,6 +225,9 @@ function relayout(p) {
   const outline = outlinePath(cssPx(p.canvasW, p.dpi), cssPx(p.canvasH, p.dpi));
   pill.style.clipPath = `path('${outline}')`;
   rings.setAttribute('viewBox', `0 0 ${p.canvasW} ${p.canvasH}`);
+  // Half the stroke falls outside the clip, leaving a 1 px edge.
+  edge.setAttribute('d', outlinePath(p.canvasW, p.canvasH));
+  edge.setAttribute('stroke-width', String((EDGE_STROKE * p.dpi) / BASE_DPI));
   placeCircle(ringTrack, head.ringCx, head.ringCy, head.ringRadius, head.ringStroke);
   placeCircle(ringArc, head.ringCx, head.ringCy, head.ringRadius, head.ringStroke);
   placeCircle(timeRingTrack, head.ringCx, head.ringCy, head.timeRingRadius, head.timeRingStroke);

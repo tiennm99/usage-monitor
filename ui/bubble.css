@@ -1,21 +1,27 @@
 /* Bubble palette. Accent and fill colours come from the payload. */
 :root[data-theme='dark'] {
-  /* 60% opaque, so the desktop shows through; text and bars stay solid. */
+  /* 60% opaque, so the desktop shows through. Tracks and the edge are
+     tints over it, so they keep the same contrast step on a light or dark
+     desktop; the text halo keeps text readable on either. */
   --bg: rgb(31 31 31 / 60%);
-  --track: #2c2c2c;
-  --time-track: #404040;
+  --track: rgb(0 0 0 / 28%);
+  --time-track: rgb(255 255 255 / 14%);
   --time-fill: #b0b0b0;
+  --edge: rgb(255 255 255 / 22%);
   --text: #eaeaea;
-  --muted: #a8a8a8;
+  --muted: #c4c4c4;
+  --halo: 0 0 2px rgb(0 0 0 / 75%);
 }
 
 :root[data-theme='light'] {
   --bg: rgb(243 243 243 / 60%);
-  --track: #e2e2e2;
-  --time-track: #e0e0e0;
+  --track: rgb(0 0 0 / 10%);
+  --time-track: rgb(0 0 0 / 8%);
   --time-fill: #666666;
+  --edge: rgb(0 0 0 / 18%);
   --text: #1f1f1f;
-  --muted: #5e5e5e;
+  --muted: #4a4a4a;
+  --halo: 0 0 2px rgb(255 255 255 / 85%);
 }
 
 html,
@@ -56,8 +62,13 @@ body {
   height: 100%;
 }
 
-.rings circle {
+.rings circle,
+.edge {
   fill: none;
+}
+
+.edge {
+  stroke: var(--edge);
 }
 
 .ring-track {
@@ -82,6 +93,7 @@ body {
   margin: 0;
   white-space: nowrap;
   color: var(--text);
+  text-shadow: var(--halo);
 }
 
 .head-label {
